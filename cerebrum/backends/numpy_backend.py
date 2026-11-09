@@ -296,7 +296,7 @@ class Population:
                  "u_short_term", "tau_recovery", "target_hz",
                  "tau_homeostasis", "eta_homeostasis", "wta_k",
                  "region_sizes", "region_index", "gain_arr", "drive_arr",
-                 "homeostasis_on")
+                 "homeostasis_on", "wta_per_region", "region_starts")
 
     def __init__(self, n: int, rng: "Rng", *, tau_m: float = 10.0,
                  v_threshold: float = 1.0, refractory_steps: int = 3,
@@ -306,7 +306,8 @@ class Population:
                  u_short_term: float = 0.15, tau_recovery: float = 120.0,
                  target_hz: float = 5.0, tau_homeostasis: float = 2000.0,
                  eta_homeostasis: Optional[float] = None, wta_k: int = 0,
-                 regions: Optional[tuple] = None) -> None:
+                 regions: Optional[tuple] = None,
+                 wta_per_region: bool = False) -> None:
         self.n = int(n)
         self.rng = rng
         self.v = np.zeros(self.n, np.float32)
@@ -352,6 +353,14 @@ class Population:
             raise ValueError("regions must sum to the population size")
         self.region_index = np.repeat(
             np.arange(len(self.region_sizes)), self.region_sizes)
+        self.region_starts = np.concatenate(
+            ([0], np.cumsum(self.region_sizes)[:-1])).astype(np.int64)
+        # Competition scoped to a local patch instead of the whole population.
+        # Global k-WTA normalises everyone together, so no group can specialise
+        # — every cell's activity is read against the same total. Cortical
+        # inhibition is local (a basket cell covers a few hundred micrometres),
+        # and that boundary is what lets neighbouring patches diverge.
+        self.wta_per_region = bool(wta_per_region)
         self.gain_arr = np.ones(len(self.region_sizes), np.float64)
         self.drive_arr = np.zeros(len(self.region_sizes), np.float64)
         # Set False during sleep replay. Homeostasis scales the whole
@@ -399,12 +408,15 @@ class Population:
 
         fired = v >= self.threshold
         if self.wta_k > 0:
-            n_fired = int(fired.sum())
-            if n_fired > self.wta_k:
-                idx = np.nonzero(fired)[0]
-                top = idx[np.argpartition(v[idx], -self.wta_k)[-self.wta_k:]]
-                fired = np.zeros_like(fired)
-                fired[top] = True
+            if self.wta_per_region and len(self.region_sizes) > 1:
+                fired = self._wta_local(v, fired)
+            else:
+                n_fired = int(fired.sum())
+                if n_fired > self.wta_k:
+                    idx = np.nonzero(fired)[0]
+                    top = idx[np.argpartition(v[idx], -self.wta_k)[-self.wta_k:]]
+                    fired = np.zeros_like(fired)
+                    fired[top] = True
         if force is not None and len(force):
             # applied after the competition, so a replayed pattern is not
             # thinned out by k-WTA
@@ -437,6 +449,29 @@ class Population:
         self.drive_arr += self.eta_homeostasis * 1.5 * error
         np.clip(self.drive_arr, -0.5, 1.8, out=self.drive_arr)
         return idx
+
+    def _wta_local(self, v, fired):
+        """k-WTA applied within each region separately.
+
+        Each patch keeps its own ``k / n_regions`` winners, so patches compete
+        with their own neighbours and not with the entire population.
+        """
+        n_reg = len(self.region_sizes)
+        k_per = max(1, self.wta_k // n_reg)
+        out = np.zeros_like(fired)
+        for r in range(n_reg):
+            lo = int(self.region_starts[r])
+            hi = lo + int(self.region_sizes[r])
+            seg = fired[lo:hi]
+            n_seg = int(seg.sum())
+            if n_seg > k_per:
+                idx = np.nonzero(seg)[0]
+                sub = v[lo:hi][idx]
+                top = idx[np.argpartition(sub, -k_per)[-k_per:]]
+                out[lo + top] = True
+            else:
+                out[lo:hi] = seg
+        return out
 
     def rates(self) -> np.ndarray:
         """Placeholder for a running rate estimate (single-step indicator)."""
