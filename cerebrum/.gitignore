@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# recordings and trained state
+data/
+*.brain
+*.npz
+player.html

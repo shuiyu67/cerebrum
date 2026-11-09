@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cerebrum"
+version = "2.0.0"
+description = "A spiking brain engine: LIF neurons, inhibitory balance, a hippocampal attractor, and portable memory files."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "shuiyu" }]
+keywords = [
+    "spiking neural network",
+    "snn",
+    "neuromorphic",
+    "computational neuroscience",
+    "brain emulation",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.optional-dependencies]
+fast = ["numpy>=1.20"]
+
+[tool.setuptools]
+packages = [
+    "cerebrum",
+    "cerebrum.backends",
+    "cerebrum.bench",
+    "cerebrum.examples",
+    "cerebrum.experiments",
+]
