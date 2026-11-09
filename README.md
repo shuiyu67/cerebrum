@@ -87,7 +87,7 @@ same seed, one mechanism switched off, everything else identical.
 | The thalamus gates what the cortex ignores | 100% of the distractor relay survives with the reticular nucleus lesioned | **57% survives**; the attended channel keeps 100% |
 | The basal ganglia pick one action | 6 channels open, strongest proposal chosen 13% of the time (chance) | **1 channel open, chosen 100%** |
 | The hippocampus completes a partial cue | 0.22 Jaccard with no storage | **0.69 Jaccard** after one exposure each |
-| The amygdala learns fear in one trial | 0.00 with arousal blocked | **1.43 to the paired cue, 0.00 to an unpaired one** |
+| The amygdala learns fear in one trial | 0.00 with arousal blocked | **0.52 to the paired cue, 0.00 to an unpaired one** |
 | The cerebellum learns timing from error | Purkinje response 0.99 with LTD disabled | **0.72 with LTD** — the trained response is suppressed |
 | Dopamine codes prediction error, not reward | — | **1.00 → 0.68** as the reward becomes predicted, **−0.33 on omission** |
 
