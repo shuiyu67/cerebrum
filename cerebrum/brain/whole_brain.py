@@ -184,12 +184,19 @@ class WholeBrain:
             amyg = {"fear": 0.0, "prediction": 0.0,
                     "la": np.empty(0), "ce": np.empty(0)}
         else:
-            amyg = self.amygdala.step(sensors, us, arousal=arousal)
+            # The conditioned stimulus is exteroceptive only. Feeding the
+            # interoceptive channels in as well makes the cue permanently
+            # present — hunger is always somewhere in the vector — so one
+            # pairing saturates fear and the animal flees forever (measured:
+            # 3000 of 3000 steps on the flee action, fear pinned at 1.50).
+            cs = sensors.copy()
+            if cs.size > 8:
+                cs[8:] = 0.0
+            amyg = self.amygdala.step(cs, us, arousal=arousal)
             if learn and us > 0.0:
-                self.amygdala.learn(sensors, us, arousal=arousal,
+                self.amygdala.learn(cs, us, arousal=arousal,
                                     ach=self.modulators.ach)
-            if "hypothalamus" not in self.lesion:
-                self.hypothalamus.fear = max(self.hypothalamus.fear, amyg["fear"])
+            # no max() here: a floor on fear is a floor on recovery
 
         # 7. cerebellum: efference copy of what the cortex just proposed
         if "cerebellum" in self.lesion:
@@ -245,7 +252,13 @@ class WholeBrain:
         """Cortex proposes, basal ganglia permits, hypothalamus insists."""
         ev = np.asarray(evidence, np.float64)
         release = 1.0 - np.asarray(gpi, np.float64)
-        score = ev * (0.15 + 0.85 * release)
+        # The cortical proposal is weighted below the drives on purpose. The
+        # mapping from an L5 block to an action is fixed and arbitrary, and
+        # nothing in the loop learns it — so the proposal carries weak, mostly
+        # random evidence about *which* action to take. It is still needed
+        # (it is the only thing that distinguishes two situations with the
+        # same drives), but letting it dominate makes the animal twitch.
+        score = ev * (0.15 + 0.85 * release) * 0.35
 
         bias = np.zeros(self.n_actions)
         # drives are additive urges on specific channels, not a replacement
@@ -258,7 +271,10 @@ class WholeBrain:
         bias[0] += 0.42 * max(0.0, hypo["forage_bias"])   # forward / explore
         bias[3] += 0.55 * max(0.0, hypo["forage_bias"])   # eat
         bias[5] += 0.30 * max(0.0, hypo["rest_bias"])     # rest
-        bias[4] += 0.95 * float(hypo["fear"])             # flee
+        # Escape has a threshold. A linear term meant any residual fear
+        # produced fleeing, so the animal fled at fear 0.2 as readily as at
+        # 0.9 and never did anything else.
+        bias[4] += 0.90 * max(0.0, float(hypo["fear"]) - 0.30)
         score = score + bias
 
         # Cerebellar correction sharpens the timing of the leading channel

@@ -40,9 +40,11 @@ class Amygdala:
     """Associative fear with one-trial acquisition."""
 
     def __init__(self, n_inputs: int = 16, *, n_la: int = 120,
-                 n_ce: int = 60, lr: float = 0.55, seed: int = 0) -> None:
+                 n_ce: int = 60, lr: float = 0.55,
+                 extinction_lr: float = 3e-4, seed: int = 0) -> None:
         self.n_in = int(n_inputs)
         self.lr = float(lr)
+        self.extinction_lr = float(extinction_lr)
         rng = np.random.default_rng(seed + 41)
 
         # The CS->LA association. Starts near zero: fear is learned, not
@@ -74,14 +76,22 @@ class Amygdala:
         cs = np.asarray(cs, np.float32).ravel()
         pred = float(self.w_cs @ cs)
 
-        la_ext = (pred * 2.6 + us * 3.0) * arousal
+        la_ext = (pred * 1.1 + us * 2.2) * arousal
         la_idx = self.la.step(np.full(self.la.n, la_ext, np.float32))
 
         syn = (self.la_to_ce[:, la_idx].sum(axis=1)
                if la_idx.size else None)
         ce_idx = self.ce.step(None, syn_extra=syn)
 
-        self.fear = 0.9 * self.fear + 0.1 * min(1.5, la_ext * 0.6 + us)
+        # Extinction: the cue is present and nothing bad happens, so the
+        # association weakens. Without it a single pairing generalises to
+        # every situation that shares the cue, fear never comes down, and the
+        # animal does nothing but flee — measured, 3000 of 3000 steps spent
+        # on the flee action. Acquisition is one trial; extinction is slow,
+        # which is the asymmetry that makes fear hard to unlearn.
+        if us <= 0.0 and self.w_cs.sum() > 0:
+            self.w_cs *= (1.0 - self.extinction_lr)
+        self.fear = 0.9 * self.fear + 0.1 * min(1.2, la_ext * 0.45 + us)
         return {"la": la_idx, "ce": ce_idx, "fear": float(self.fear),
                 "prediction": pred}
 

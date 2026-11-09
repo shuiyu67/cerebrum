@@ -120,7 +120,11 @@ class Hypothalamus:
             "fear": self.fear,
             "orexin": self.orexin,
             "crf": crf,
-            "forage_bias": float(np.clip(self.hunger - 0.5 * self.fear, -1.0, 1.0)),
+            # Fear and hunger drive *different* actions, so fear damps
+            # foraging rather than cancelling it. With a 0.5 coefficient a
+            # scared animal scored 0 on forage and never ate again.
+            "forage_bias": float(np.clip(self.hunger - 0.25 * self.fear,
+                                         -1.0, 1.0)),
             "rest_bias": float(np.clip(self.fatigue - 0.3 * self.hunger, -1.0, 1.0)),
             "arousal": float(np.clip(self.orexin * (1.0 - 0.6 * self.fatigue), 0.1, 1.5)),
         }

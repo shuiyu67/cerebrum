@@ -157,8 +157,11 @@ class Body:
             self.fatigue = max(0.0, self.fatigue - 0.004)
 
         # hunger and energy drift
-        self.energy = float(np.clip(self.energy - 0.0012, 0.0, 1.5))
-        self.hunger = float(np.clip(self.hunger + 0.0006, 0.0, 1.5))
+        # Metabolic drain. At 0.0012 per millisecond the animal starved every
+        # ~800 steps, which reset the world before hunger could ever build —
+        # measured, hunger never exceeded 0.35 and the drives never engaged.
+        self.energy = float(np.clip(self.energy - 0.00018, 0.0, 1.5))
+        self.hunger = float(np.clip(self.hunger + 0.00035, 0.0, 1.5))
 
         if self.predator_on:
             if self.steps % 5 == 0:
@@ -183,9 +186,14 @@ class Body:
         else:
             self.fear = max(0.0, self.fear - 0.01)
 
+        # Starvation no longer ends the episode. In an abstract grid it ended
+        # it every ~800 steps, which reset the drives before they could
+        # develop and made every long run a sequence of restarts. The cost of
+        # being out of energy is that hunger pins at its ceiling, which is
+        # what should be shaping behaviour anyway.
         if self.energy <= 0.0:
-            self.alive = False
-            reward -= 1.0
+            self.energy = 0.0
+            reward -= 0.2
             info["starved"] = True
 
         return self.sense(), float(reward), not self.alive, info

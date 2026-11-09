@@ -119,11 +119,14 @@ systems engaged, no numerical blow-ups over tens of thousands of steps. On the
 foraging task it eats, avoids the predator some of the time, and rests when
 tired.
 
-It is not competent. At these timescales — tens of seconds of simulated life —
-the cortex's synapses have barely moved, so most of what it does is reflex:
-thalamic relay, hypothalamic drive, basal ganglia gating. Learning is present
-and measurable in the subsystems; it has not yet had time to show up as
-skilled behaviour. That is the honest state of it.
+It is not competent. Over 8,000 milliseconds (three seeds) it eats 8-10 times,
+is caught by the predator 200+ times, and spends most of its time resting and
+fleeing. At these timescales the cortex's synapses have barely moved, so what
+it does is reflex: thalamic relay, hypothalamic drive, basal ganglia gating.
+Learning is present and measurable in every subsystem; it has not yet had time
+to show up as skilled behaviour, and the cortical motor map — which L5 block
+means which action — is fixed rather than learned, so the cortex proposes
+weakly and the drives decide. That is the honest state of it.
 
 ---
 
@@ -317,11 +320,17 @@ For the assembled brain:
   and sometimes evades, but the actions track thalamic relay and hypothalamic
   drive more than they track anything learned: cortical synapses have moved
   almost nothing in 8 seconds of simulated life.
-- **The lesion suite cannot yet resolve most systems.** Of seven lesions, only
-  the thalamus produces a difference outside the noise at this timescale
-  (eating drops from 17 to 5). The others are real bypasses — verified by unit
-  tests — but 8,000 ms is too short for their contribution to show up in
-  behaviour.
+- **The lesion suite mostly measures how much the animal moves.** Removing
+  the thalamus, hypothalamus, cerebellum or neuromodulators cuts eating *and*
+  being caught together (6,000 ms, one seed: intact 38 eaten / 161 caught;
+  no thalamus 3 / 14; no hypothalamus 3 / 15; no neuromodulators 2 / 11), which
+  says the animal became inactive rather than worse at choosing. The lesions
+  are real bypasses — the unit tests check each one — but behaviour at this
+  timescale cannot separate "chooses badly" from "does less".
+- **The cortical motor map is arbitrary.** L5 is split into N blocks and block
+  *i* means action *i*; nothing learns that correspondence. The basal ganglia
+  learn the value of each channel, which is why selections are consistent, but
+  the cortex cannot discover that a *different* block should drive eating.
 - **High tonic dopamine disinhibits everything.** With dopamine near +1 every
   channel releases at once, which is a plausible model of the failure mode but
   is currently unregulated rather than a designed feature.
