@@ -167,6 +167,9 @@ it was not a neuron.
 
 ## Usage
 
+No install step — this is a runnable project, not a package to depend on.
+Clone it and run modules from the repository root.
+
 ```bash
 # scale benchmark
 python -m cerebrum.bench.scale
