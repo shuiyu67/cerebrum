@@ -163,6 +163,8 @@ class ArmController:
             thr = rng.uniform(0.0, 1.0, per_channel)
             self.channels.append((pos, neg, thr))
         self.W = np.zeros((2, self.n_bins), np.float32)
+        self.last_spikes = np.empty(0, np.int64)
+        self.last_rate = 0.0
 
     def _drive(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         idx, val = [], []
@@ -180,12 +182,19 @@ class ArmController:
     def features(self, obs: np.ndarray) -> np.ndarray:
         acc = np.zeros(self.n_bins, np.float32)
         n = 0
+        last = np.empty(0, np.int64)
         for _ in range(self.steps_per_action):
             ext, val = self._drive(obs)
             idx = self.pool.step(ext, val) if ext.size else self.pool.step(None)
+            last = idx
             if idx.size:
                 acc += self.pool.binned_state(idx, self.n_bins)
                 n += 1
+        # Spikes from the final millisecond only. Keeping the union over all
+        # steps made a third of the pool look active at once, which is true
+        # over six milliseconds and misleading in a single frame.
+        self.last_spikes = last
+        self.last_rate = float(last.size) / max(1, self.n_neurons)
         if n:
             acc /= float(n)
         return (acc / (float(np.linalg.norm(acc)) + 1e-8)).astype(np.float32)
