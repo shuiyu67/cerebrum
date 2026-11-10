@@ -158,7 +158,9 @@ second on one core.
 ### Result
 
 Character-level, on this repository's own source (370k characters, 78-symbol
-vocabulary), 20,000 characters of training, one pass, no epochs:
+vocabulary at the time of measurement), 20,000 characters of training, one
+pass, no epochs. The corpus is not committed — it is rebuilt from the tree on
+first use, so the exact character count drifts as the repository grows:
 
 | | bits/char | top-1 |
 |---|---|---|

@@ -9,12 +9,44 @@ solved by memorising 26 transition probabilities.
 
 from __future__ import annotations
 
+import io
+import os
 from typing import Optional
 
 import numpy as np
 
 
+CORPUS_PATH = "data/corpus.txt"
+
+
+def build_corpus_from_sources(root: str = ".", out: str = CORPUS_PATH) -> str:
+    """Assemble the corpus from this repository's own source files.
+
+    The corpus is deliberately not committed: it is derived from the tree, so
+    it would double the repository and go stale the moment a file changed.
+    Building it on demand is what makes a fresh clone runnable — without
+    this, `python -m cerebrum.lm.train` and the LM tests both fail on a
+    machine that has never run them.
+    """
+    import glob
+    import os
+
+    files = sorted(
+        glob.glob(os.path.join(root, "cerebrum", "**", "*.py"), recursive=True)
+        + glob.glob(os.path.join(root, "tests", "*.py"))
+        + glob.glob(os.path.join(root, "*.md"))
+    )
+    text = "\n".join(io.open(f, encoding="utf-8", errors="ignore").read()
+                      for f in files)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return text
+
+
 def load_text(path: str) -> str:
+    if not os.path.exists(path):
+        return build_corpus_from_sources(out=path)
     with open(path, encoding="utf-8", errors="ignore") as fh:
         return fh.read()
 
@@ -44,7 +76,7 @@ def encode(text: str, stoi: dict, unknown: int) -> np.ndarray:
 class Corpus:
     """Encoded stream plus contiguous train / validation splits."""
 
-    def __init__(self, path: str, *, min_count: int = 120,
+    def __init__(self, path: str = CORPUS_PATH, *, min_count: int = 120,
                  val_frac: float = 0.1) -> None:
         text = load_text(path)
         self.chars, self.stoi, self.unknown = build_vocab(text, min_count)
