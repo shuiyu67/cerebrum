@@ -194,8 +194,21 @@ class SparseReservoir:
 
         if ext_idx is not None and len(ext_idx):
             # a current, not a current divided by tau: the input has to be
-            # able to fire a cell on the step it arrives
-            v[np.asarray(ext_idx, np.int64)] += np.float32(ext_val)
+            # able to fire a cell on the step it arrives.
+            #
+            # A vector is allowed so the same population can be driven with
+            # cell-specific gains. Uniform drive locks the driven cells into
+            # phase — they charge together, cross threshold together, and go
+            # refractory together — so the firing count reflects the
+            # refractory phase rather than the input. Measured with uniform
+            # drive: correlation between drive magnitude and spike count 0.48,
+            # and no single readout dimension above 0.31, which made the
+            # memory-capacity measurement read as zero for every pool.
+            ei = np.asarray(ext_idx, np.int64)
+            if np.ndim(ext_val) == 0:
+                v[ei] += np.float32(ext_val)
+            else:
+                v[ei] += np.asarray(ext_val, np.float32)
 
         # --- refractoriness and threshold -------------------------------
         # The refractory clamp is folded into the threshold test instead of

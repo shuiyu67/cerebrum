@@ -213,20 +213,97 @@ should answer it.
 | 10 | 14.4% | 16.0% | 12.5% |
 
 Barely above chance. The pool's memory is **2-3 characters**, measured, and
-the task needs 3-10. The recurrence is real now but shallow: 32 synapses per
-cell against roughly 10,000 in cortex, and 1% activity against 5%. Getting
-memory that lasts 20 steps needs fan-out in the hundreds, which at a million
-neurons is 1.5 GB of synapses — past what this machine has free.
+the task needs 3-10.
+
+### Memory capacity: how many past inputs the pool actually holds
+
+The delayed-recall result raised an obvious question — is the memory limited by
+the number of synapses per cell, or by something else? Rather than guess, the
+pool's capacity was measured directly with Jaeger's memory capacity:
+
+```
+MC_k = corr²( u(t-k), readout(state_t) )      MC = sum_k MC_k
+```
+
+A memoryless system scores about 1 (it reports the current input only). A delay
+line of length D scores D. The control arm sets `w_scale = 0`, which removes
+recurrence entirely.
+
+```bash
+python -m cerebrum.lm.capacity           # shape comparison at fixed synapse budget
+python -c "from cerebrum.lm.capacity import sweep; sweep()"   # parameter sweep
+```
+
+| configuration (all 32M synapses) | total MC | depth | MC₁ |
+|---|---|---|---|
+| control, no recurrence | 0.06 | 0 | 0.01 |
+| 1.0M neurons × 32 | **0.53** | 2 | 0.33 |
+| 0.5M neurons × 64 | 0.44 | 1 | 0.32 |
+| 0.25M neurons × 128 | 0.50 | 1 | 0.34 |
+| 0.12M neurons × 256 | 0.45 | 1 | 0.29 |
+
+**Eight times the synapses per cell buys nothing.** The weights were normalised
+by `1/sqrt(fan_out)` to hold the spectral radius fixed, so the dynamics were
+unchanged — which is the point: fan-out is not the lever.
+
+So the lever was swept instead:
+
+| knob | setting | total MC | depth |
+|---|---|---|---|
+| spectral radius | w = 6-8 (peak) | 0.64-0.67 | **1** |
+| spectral radius | w = 16 (saturated) | 0.21 | 1 |
+| adaptation | off | 0.61 (vs 0.33 at w=4) | 1 |
+| membrane τ | 40 ms | 0.39 | 1 |
+| membrane τ | 80 ms | 0.43 | 1 |
+| balanced regime | w ≤ 1.2, strong inhibition | 0.05-0.12 | 0 |
+
+**MC₂ never exceeded 0.10 in any configuration.** The pool holds one input —
+about 6-10 ms — and no parameter moves the depth.
+
+That is not a tuning failure. A cell here needs two or three coincident inputs
+to cross threshold, so it fires on the current volley instead of integrating
+over several. Spike-frequency adaptation then suppresses the cells that were
+just active, which is why switching it off doubles the single-step capacity
+while leaving the depth at one.
+
+**This also closes the loop on the language model.** A pool with one input of
+memory *is* a bigram with extra noise — which is exactly what was measured:
+4.68 bits against 4.36 for a counting table, and recall that dies at k=3. The
+two results are the same fact seen from two directions.
+
+Three measurement bugs had to be fixed before any of this measured anything,
+and each one had produced a plausible-looking zero:
+
+1. **Input coding.** Uniform current locks every driven cell into the same
+   refractory phase, so the spike count tracks the phase and not the input
+   (k=0 reconstruction 0.03). Rank coding — each input cell has its own fixed
+   threshold — gives 0.85 for the same pool.
+2. **Input coverage.** 2% of the pool driven left 54 cells firing per step at
+   100k neurons: 0.05% activity, pure noise in the readout.
+3. **Hold time.** One input per millisecond against a 20 ms membrane is an
+   aliased signal. Holding each input for 6 ms is what makes the control arm
+   score 0.85 instead of 0.04.
 
 ### What this means
 
 The engine runs a million neurons and learns online, in one pass, with no
 backpropagation, and the number is reproducible. It is not competitive with a
-n-gram at this data budget, and the two fixes above show that the gap is
-mostly depth of recurrence rather than something philosophical. A reservoir
-this shallow is a random nonlinear feature map with a 3-character memory; that
-is enough to beat uniform and to contribute 0.29 bits over its own readout,
-and not enough to beat counting.
+n-gram at this data budget, and the capacity measurement says why in a way that
+does not depend on the corpus: **the pool holds one input.**
+
+One input of memory is a bigram with extra noise. That is enough to beat a
+uniform baseline and to contribute 0.29 bits over its own readout, and not
+enough to beat a counting table that gets the bigram exactly right.
+
+An earlier version of this section guessed that the fix was more synapses per
+cell. That was measured and it is wrong: eight times the fan-out at the same
+total synapse count leaves the depth at one, and sweeping the spectral radius,
+adaptation and membrane time constant does not move it either. What is missing
+is not depth of wiring but the operating regime — a cell that needs two
+coincident inputs fires on the current volley instead of integrating over
+several. Memory of 10-20 steps out of this family of networks needs a balanced
+regime with active gain control, which is a different piece of work from
+scaling this one up.
 
 ## The substrate engine
 
@@ -489,6 +566,7 @@ python -m cerebrum.experiments.make_player --record data/run.json --out player.h
 | `lm/model.py` | signed projection + online softmax readout |
 | `lm/data.py` | character corpus, blocked interleaved split, bigram baseline |
 | `lm/tasks.py` | delayed recall — the task a reservoir is actually for |
+| `lm/capacity.py` | memory capacity: how many past inputs the pool holds, with a control arm |
 | `lm/train.py` | the training loop |
 
 ## The `.brain` format

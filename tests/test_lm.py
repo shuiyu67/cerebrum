@@ -113,3 +113,62 @@ def test_corpus_splits_without_overlap():
     assert len(corpus.train) + len(corpus.val) == corpus.text_len
     assert corpus.train[-1] != corpus.val[0] or True     # contiguous, not shared
     assert corpus.uniform_bits > 3.0
+
+
+# --------------------------------------------------------- memory capacity
+
+def test_memory_capacity_control_has_no_memory():
+    """Without recurrence the readout can report the current input and nothing
+    earlier. This is the control that makes every other capacity number
+    meaningful: if a memoryless pool scores memory, the measurement is leaking
+    the input through the feature extraction."""
+    from cerebrum.lm.capacity import capacity_curve, collect_states
+
+    u = np.random.default_rng(7).uniform(-1, 1, 400).astype(np.float32)
+    pool = SparseReservoir(50_000, 32, w_scale=0.0, seed=0)
+    pool.g_adapt = 0.0
+    pool._k_adapt = np.float32(0.0)
+    X = collect_states(pool, u, n_bins=64)
+    curve = capacity_curve(X, u, max_delay=4)
+
+    assert curve.sum() < 0.15, "memoryless pool scored %.3f" % curve.sum()
+    assert curve[1] < 0.05, "delayed reconstruction leaked the input"
+
+
+def test_memory_capacity_recurrence_adds_one_step():
+    """A recurrent pool carries roughly one past input — measured, not assumed.
+
+    The threshold is the measured value with room below it. It is here to catch
+    a regression in the pool, not to claim biological capacity: the reading of
+    one step is the whole finding, and it is what makes the language model
+    behave like a bigram.
+    """
+    from cerebrum.lm.capacity import capacity_curve, collect_states
+
+    u = np.random.default_rng(7).uniform(-1, 1, 400).astype(np.float32)
+    pool = SparseReservoir(50_000, 32, w_scale=6.0, seed=0)
+    pool.g_adapt = 0.0
+    pool._k_adapt = np.float32(0.0)
+    X = collect_states(pool, u, n_bins=64)
+    curve = capacity_curve(X, u, max_delay=4)
+
+    assert curve[0] > 0.30, "no first-step memory: %.3f" % curve[0]
+    assert curve.sum() > 0.45, "total capacity collapsed: %.3f" % curve.sum()
+    # and it is shallow — the same limit the language model runs into
+    assert curve[3:].sum() < 0.10, "deeper than measured: %.3f" % curve[3:].sum()
+
+
+def test_input_drive_accepts_per_cell_current():
+    """Rank coding drives the same population with cell-specific thresholds,
+    which needs a vector of currents. A scalar must still work."""
+    pool = SparseReservoir(20_000, 32, w_scale=0.0, seed=0)
+    idx = np.arange(1000)
+    vec = np.random.default_rng(0).uniform(0.0, 1.2, 1000).astype(np.float32)
+    # three steps: one millisecond of current at 0.9 does not reach a
+    # threshold of 1.0, so a single step would test nothing
+    a = sum(len(pool.step(idx, vec)) for _ in range(3))
+    pool.reset()
+    b = sum(len(pool.step(idx, 0.9)) for _ in range(3))
+    assert a > 0, "vector current drove nothing"
+    assert b > 0, "scalar current drove nothing"
+    assert a != b, "vector and scalar produced identical counts"
