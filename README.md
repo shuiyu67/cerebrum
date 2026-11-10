@@ -130,6 +130,102 @@ weakly and the drives decide. That is the honest state of it.
 
 ---
 
+## A million neurons as a language model
+
+`cerebrum.lm` runs a million spiking neurons as a character language model.
+The pool is random and fixed; only a linear readout is trained, online, in a
+single pass.
+
+```bash
+python -m cerebrum.lm.train --neurons 1000000 --tokens 20000 --steps 2 --bins 512
+python -m cerebrum.lm.tasks          # delayed recall
+```
+
+**Why a reservoir.** This engine has no backward pass and is not going to get
+one — every mechanism in it changes a weight locally. So "train an LM" has to
+mean something a gradient-free network can do. A reservoir is the honest
+answer: the million neurons are never trained, and the only gradient anywhere
+is one linear layer, the same amount a logistic regression uses.
+
+**Scaling.** The assembled brain uses dense `n x n` matrices per region, which
+is right at 900 cells and impossible at a million (10^12 floats, four
+terabytes). The LM uses synapses grouped by presynaptic cell — each neuron
+owns 32 contiguous outgoing synapses, so an index range is a slice and nothing
+is ever sorted — with propagation as one scatter over the cells that fired.
+A million neurons and 32M synapses fit in 253 MB and run at 18 characters per
+second on one core.
+
+### Result
+
+Character-level, on this repository's own source (370k characters, 78-symbol
+vocabulary), 20,000 characters of training, one pass, no epochs:
+
+| | bits/char | top-1 |
+|---|---|---|
+| uniform | 6.29 | — |
+| bigram, closed form, same 20k | **4.36** | — |
+| reservoir LM, online | 4.68 | 18.7% |
+
+**It loses to a bigram by 0.33 bits.** That is the result, and the interesting
+part is knowing why.
+
+### Two real bugs, both found by measuring rather than reading
+
+**1. The recurrent weights were about a hundred times too small.** The membrane
+update multiplies synaptic current by `1/tau`, so at the physiologically
+sensible `w = 0.1` one input moves the membrane by 0.005 and thirty of them
+have to land in the same millisecond to matter. The pool was, in effect,
+disconnected: measured echo after the input stopped was **exactly zero** at
+every fan-out tried, up to 128 synapses per cell. At `w = 8` the same pool
+reverberates for 5-10 ms and settles at a stable 10 Hz.
+
+**2. The evaluation window was off by one.** Training fed `stream[t-k:t]` plus
+the current character; the evaluation fed `stream[pos-k:pos]`, which includes
+it. The model was handed an input it had never seen. Accuracy was 0% and the
+loss *above* the uniform baseline — a signature that looks like "the
+architecture cannot do this" and is actually an indexing error.
+
+### What the pool is worth
+
+Paired ablation, 20k pool, 6,000 characters, identical readout, pool features
+switched off:
+
+| | bits/char |
+|---|---|
+| readout without pool features | 4.879 |
+| readout with pool features | **4.593** |
+
+The pool contributes 0.29 bits. It is doing something. It is not doing enough
+to beat a counting table.
+
+### Delayed recall: what the architecture is actually for
+
+A bigram cannot answer "which symbol did you see D steps ago" — it sees the
+cue and nothing else, so 2.99 bits is its floor. A reservoir that integrates
+should answer it.
+
+| delay | bigram acc | model acc | chance |
+|---|---|---|---|
+| 3 | 14.4% | **17.6%** | 12.5% |
+| 6 | 14.4% | 13.6% | 12.5% |
+| 10 | 14.4% | 16.0% | 12.5% |
+
+Barely above chance. The pool's memory is **2-3 characters**, measured, and
+the task needs 3-10. The recurrence is real now but shallow: 32 synapses per
+cell against roughly 10,000 in cortex, and 1% activity against 5%. Getting
+memory that lasts 20 steps needs fan-out in the hundreds, which at a million
+neurons is 1.5 GB of synapses — past what this machine has free.
+
+### What this means
+
+The engine runs a million neurons and learns online, in one pass, with no
+backpropagation, and the number is reproducible. It is not competitive with a
+n-gram at this data budget, and the two fixes above show that the gap is
+mostly depth of recurrence rather than something philosophical. A reservoir
+this shallow is a random nonlinear feature map with a 3-character memory; that
+is enough to beat uniform and to contribute 0.29 bits over its own readout,
+and not enough to beat counting.
+
 ## The substrate engine
 
 The original engine — `cerebrum.core.Brain` — is still here and still what the
@@ -387,6 +483,11 @@ python -m cerebrum.experiments.make_player --record data/run.json --out player.h
 | `brain/body.py` | grid world with food and a predator |
 | `brain/whole_brain.py` | the assembly, with lesion support |
 | `brain/protocols.py` | the ablation experiments |
+| `lm/reservoir.py` | million-neuron spiking pool, grouped synapses, in-place update |
+| `lm/model.py` | signed projection + online softmax readout |
+| `lm/data.py` | character corpus, blocked interleaved split, bigram baseline |
+| `lm/tasks.py` | delayed recall — the task a reservoir is actually for |
+| `lm/train.py` | the training loop |
 
 ## The `.brain` format
 
