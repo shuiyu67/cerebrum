@@ -130,3 +130,42 @@ def test_online_loop_updates_both_layers():
     assert np.abs(W).sum() > 0.0, "readout never moved"
     drift = float(np.abs(ctrl.pool.w - w0).mean())
     assert 0.0 < drift < 0.5, "pool drift out of range: %.4f" % drift
+
+
+def test_learned_change_has_no_cell_specificity():
+    """The control that killed the +46% claim.
+
+    A learned change should be concentrated on cells that matter. Measured, it
+    is not: the shift is spread almost uniformly across cells (Gini 0.18, the
+    top 1% of cells hold under 2% of it) and over a third of synapses flip sign.
+    That is a pool being re-drawn, not a pool finding a representation — and it
+    is why shuffling which cell receives which change scores as well as, or
+    better than, the learned version.
+    """
+    import os
+
+    import numpy as np
+
+    path = "data/dino_learned_full.npz"
+    if not os.path.exists(path):
+        return  # artifact not generated in this checkout
+
+    from cerebrum.control.arm import ArmController
+
+    d = np.load(path)
+    ctrl = ArmController(n_neurons=4000, fan_out=128, n_bins=256, n_obs=11,
+                         steps_per_action=4, w_scale=2.0, ginh=400.0,
+                         target_frac=0.0, seed=0)
+    w0 = ctrl.pool.w.reshape(4000, 128)
+    w1 = d["w"].reshape(4000, 128)
+
+    frac = np.abs(w1 - w0).sum(1)
+    frac = frac / frac.sum()
+    order = np.sort(frac)
+    gini = (2 * np.sum(np.arange(1, 4001) * order)) / (4000 * order.sum()) \
+        - (4001 / 4000)
+
+    flip = (np.sign(w0) != np.sign(w1)) & (np.abs(w0) > 0.05)
+
+    assert gini < 0.3, "change is concentrated, not uniform: Gini %.3f" % gini
+    assert flip.mean() > 0.2, "too few sign flips to call this a re-draw: %.3f" % flip.mean()

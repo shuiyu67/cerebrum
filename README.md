@@ -685,25 +685,83 @@ the readout's error) was applied to the pool's own synapses:
 Monotone, with a negative control. Every earlier configuration had this
 quantity negative at every gain.
 
-### The pool is measurably better afterwards
+### An earlier version of this section was wrong
 
-Not a proxy — same readout budget for both pools (1500 frames, ridge), so the
-only variable is the synapses:
+This section used to report that the trained pool scored 259 against 178 for a
+random one (+46%), measured by giving each pool the same 1500-frame readout
+budget. That comparison does not survive a proper control.
 
-| pool | mean score | best score |
+Two controls kill it. First, a learned change has no cell specificity: taking
+the weight change the rule produced and **permuting which cell receives which
+change** scores *higher* than the learned version, not lower.
+
+| pool | mean score | best |
 |---|---|---|
-| random (untrained) | 178 | 361 |
-| **trained by three-factor plasticity** | **259** | **1213** |
+| random (untrained) | 207 | 618 |
+| trained | 198 | 640 |
+| random + **the same change, shuffled across cells** | **247** | **799** |
+| random + the change with random signs | 136 | 222 |
 
-**+46% mean, +236% best, at 33 Hz.** The video
-``data/dino_learned.mp4`` is this pool playing: left of the readout, the
-synapses are no longer the ones it started with.
+Second, the structure of the change says the same thing. Per cell, a median of
+61% of the incoming weights moved and 36.5% of synapses flipped sign, and the
+change is spread almost perfectly evenly (Gini 0.184 — the top 1% of cells hold
+1.8% of it). That is not a pool that found a representation. That is a pool that
+was re-drawn and got a luckier draw.
 
-This does not make it a good controller — the high-rate dense pool still scores
-higher on the absolute scale (3000 vs 1400) because its code quality is 0.984
-against 0.932. What it establishes is narrower and more important: **the
-synapses can be trained by a local rule, and the reason earlier attempts failed
-was that the network was running 100x too fast for the rule to see causality.**
+The original +46% was readout budget and seed noise: this measurement scatters
+by ±30% per episode and the two pools differ by less than that. Every claim in
+this repository that rests on a raw game score has to be treated as a claim
+about noise until it is repeated.
+
+### What *is* real, and how to see it
+
+The score hides the effect. Measuring the information instead — how well a
+ridge readout predicts time-to-impact from the pool state, on held-out seeds —
+gives a monotone, reproducible answer, and it has a threshold:
+
+| plasticity gain | R^2 | RMSE, all frames | RMSE at the decision point |
+|---|---|---|---|
+| 0 (untrained) | 0.8597 | 6.24 | **4.60 frames** |
+| 0.3 | 0.8558 | 6.26 | 4.69 |
+| 1.0 | 0.8542 | 6.41 | 5.11 |
+| 3.0 | 0.8498 | 6.32 | 5.15 |
+| **10.0** | **0.9329** | **4.36** | **3.66 frames** |
+
+Three things are in this table.
+
+**Weak plasticity is worse than none.** Gains 0.3 to 3 all sit at or below the
+untrained baseline. Below the threshold the rule only adds noise to a structure
+it does not have the strength to reorganise — the same shape as the LTP
+threshold, where weak stimulation produces depression and only strong
+stimulation produces potentiation.
+
+**Past the threshold it is real.** At gain 10 the code improves by 7.3 points of
+R^2, the error at the decision point falls 20%, and the improvement holds on
+seeds the pool never saw (0.9344 against 0.8597 fresh, so it is not overfitting
+a trajectory).
+
+**And it is not enough.** A jump window is about 9 frames wide. Reliable control
+needs the error at the threshold to be a couple of frames. It went from 4.6 to
+3.7. That is a fifth of the way to where it would have to be.
+
+### The pattern, stated once
+
+This is the same result as every other measurement in this file, in different
+currency:
+
+| quantity | measured improvement | what the task needs |
+|---|---|---|
+| memory capacity | 0.80 -> 1.04 | 10+ for language |
+| R^2 from the pool | 0.85 -> 0.93 | 0.99 for reliable control |
+| error at the decision point | 4.6 -> 3.7 frames | under 2 frames |
+
+Every knob in this architecture buys 10-30%. The task asks for a factor of ten.
+That gap is why six rounds of plasticity experiments ended with behaviour that
+did not move: the measurements were right, and they were measuring something
+one order of magnitude too small.
+
+**The synapses can be trained by a local rule.** That claim stands, with a
+threshold and a control behind it. What does not stand is that it is enough.
 
 ## Learning and acting at the same time
 
