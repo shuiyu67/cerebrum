@@ -202,3 +202,19 @@ def test_chaos_boundary_is_near_w_equals_one():
     lam = lyapunov(pool)
     assert lam < 0.01, "expected a stable pool at w=1.2: lambda=%.4f" % lam
     assert 5.0 < pool.rate_hz() < 30.0, "rate %.1f" % pool.rate_hz()
+
+
+def test_heterogeneous_adaptation_is_wired_up():
+    """Cortical adaptation time constants span tens to hundreds of ms. The
+    spread is a bank of leaky integrators; if the per-cell constants were not
+    actually applied the pool would silently fall back to one constant."""
+    pool = SparseReservoir(20_000, 32, tau_adapt=150.0,
+                           tau_adapt_spread=3.0, seed=0)
+    assert pool.tau_adapt_arr is not None
+    assert pool.tau_adapt_arr.min() > 30.0
+    assert pool.tau_adapt_arr.max() < 700.0
+    assert float(pool.tau_adapt_arr.std()) > 50.0
+    # and the update still runs
+    for _ in range(30):
+        pool.step(np.arange(500), 0.9)
+    assert not np.isnan(pool.v).any()

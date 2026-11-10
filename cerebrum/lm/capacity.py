@@ -61,7 +61,7 @@ Measured on the pool used by the language model:
 * Balanced regime (small weights, strong inhibition, 0.5% target activity):
   capacity collapses to 0.05-0.12. A quiet pool has no memory either.
 
-**The pool holds one input, and the reason is chaos.** The pool is
+**Why it stops at three or four, and the reason is chaos.** The pool is
 deterministic, so its dynamics can be probed exactly: perturb one copy with an
 extra millimetre of input, run both in silence, and watch the separation grow.
 It grows. The largest Lyapunov exponent is positive from ``w`` ~ 1.3 upward and
@@ -87,7 +87,30 @@ The best operating point found is ``w = 6, ginh = 2, target_frac = 0``, which
 scores MC 0.92 at depth 3 — still chaotic, but with a longer decorrelation
 time. That is the direction to push, not synapse count.
 
-**The pool holds one input at its shipped settings.** Every parameter that could plausibly extend it
+**The frontier, measured over three seeds.** Single-seed numbers scatter by
+about +-0.15, enough to reorder candidates, so these are means with ranges:
+
+| configuration | MC | depth |
+|---|---|---|
+| shipped (threshold inhibition above 3%) | 0.71 (0.59-0.86) | 2-3 |
+| proportional inhibition, w=6 | 0.94 (0.87-1.00) | 2-3 |
+| **proportional inhibition, w=8** | **1.04 (0.96-1.10)** | **3-4** |
+| proportional + heterogeneous adaptation | 0.60 (0.55-0.63) | 1-2 |
+
+So the shipped pool holds **two to three** inputs, not one, and the single
+change that buys the most is to make inhibition proportional at every activity
+level instead of engaging only above 3%: capacity 0.71 -> 1.04, depth 2-3 ->
+3-4. That is also the more biological rule — tonic inhibition tracks activity,
+it does not have a dead zone.
+
+Heterogeneous adaptation time constants were tried because cortical neurons
+span tens to hundreds of milliseconds and that spread is a bank of leaky
+integrators. It made things worse (0.60 against 0.94 at the same weight), so
+the spread is not free: it adds heterogeneity to a network that is already
+chaotic, and the extra variance costs more than the extra time scales give.
+
+Depth 3-4 is still far short of what language needs (10+), and the chaos
+measurement above says why tuning cannot close that gap. Every parameter that could plausibly extend it
 has been swept, and the depth does not move. This is not a tuning failure; it
 is the operating point of a random recurrent network with single-spike-triggered
 firing, where a cell needs only two or three coincident inputs to cross
@@ -292,6 +315,48 @@ def report(results: list[dict], widths: int = 8) -> None:
                  r["memory_mb"], r["rate_hz"], r["mc"], r["depth"], head))
     print()
     print("深度 = MC_k > 0.1 的最远 k；k 以「保持住的输入」为单位（每个保持 %d ms）" % HOLD)
+
+
+FRONTIER = (
+    # name, kwargs. Measured over three seeds at n=50k, 700 inputs of 6 ms.
+    ("shipped: threshold inhibition above 3%",
+     dict(w_scale=8.0, ginh=30.0, target_frac=0.03, g_adapt=0.30, spread=0.0)),
+    ("proportional inhibition, w=6",
+     dict(w_scale=6.0, ginh=1.0, target_frac=0.0, g_adapt=0.0, spread=0.0)),
+    ("proportional inhibition, w=8",
+     dict(w_scale=8.0, ginh=1.0, target_frac=0.0, g_adapt=0.0, spread=0.0)),
+    ("proportional + heterogeneous adaptation",
+     dict(w_scale=6.0, ginh=1.0, target_frac=0.0, g_adapt=0.30, spread=1.0)),
+)
+
+
+def frontier(n: int = 50_000, T: int = 700, seeds=(0, 1, 2),
+             max_delay: int = 12, n_bins: int = 64) -> None:
+    """Capacity of the best configurations found, over several seeds.
+
+    Single-seed measurements of this quantity scatter by roughly +-0.15, which
+    is enough to reorder the candidates, so every number here is a mean over
+    three seeds with the range in brackets.
+    """
+    print("%-44s | MC mean (range)   | depth | MC_1  MC_2  MC_3" % "configuration")
+    for name, c in FRONTIER:
+        mcs, deps, head = [], [], []
+        for seed in seeds:
+            u = np.random.default_rng(seed + 7).uniform(-1, 1, T).astype(np.float32)
+            pool = SparseReservoir(n, 32, w_scale=c["w_scale"], ginh=c["ginh"],
+                                   target_frac=c["target_frac"],
+                                   tau_adapt_spread=c["spread"], seed=seed)
+            pool.g_adapt = c["g_adapt"]
+            pool._k_adapt = np.float32(c["g_adapt"] * pool.beta)
+            X = collect_states(pool, u, n_bins=n_bins, seed=seed)
+            curve = capacity_curve(X, u, max_delay=max_delay)
+            mcs.append(float(curve.sum()))
+            deps.append(int((curve > 0.1).sum()))
+            head.append(curve[:3])
+        h = np.mean(head, axis=0)
+        print("%-44s | %.2f (%.2f-%.2f) | %d-%d   | %.2f  %.2f  %.2f"
+              % (name, np.mean(mcs), min(mcs), max(mcs), min(deps), max(deps),
+                 h[0], h[1], h[2]))
 
 
 def sweep(n: int = 100_000, T: int = 500, n_bins: int = 128,

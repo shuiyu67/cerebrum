@@ -257,8 +257,10 @@ So the lever was swept instead:
 | membrane τ | 80 ms | 0.43 | 1 |
 | balanced regime | w ≤ 1.2, strong inhibition | 0.05-0.12 | 0 |
 
-**MC₂ never exceeded 0.10 in any configuration.** The pool holds one input —
-about 6-10 ms — and no parameter moves the depth.
+**No configuration reached MC₂ above 0.20, or a depth beyond four.** Over
+three seeds the shipped pool holds **two to three** inputs (12-18 ms); the best
+rules found reach three to four. Nothing reached the ten-plus that language
+needs.
 
 That is not a tuning failure. A cell here needs two or three coincident inputs
 to cross threshold, so it fires on the current volley instead of integrating
@@ -308,8 +310,9 @@ connectivity (the hippocampal module in `cerebrum/brain` does exactly this, and
 completes patterns at 0.69 from a partial cue), or plasticity that moves the
 spectral radius below the chaos threshold.
 
-**This also closes the loop on the language model.** A pool with one input of
-memory *is* a bigram with extra noise — which is exactly what was measured:
+**This also closes the loop on the language model.** A pool with two or three
+inputs of memory *is* a bigram with a short smear on it — which is exactly what
+was measured:
 4.68 bits against 4.36 for a counting table, and recall that dies at k=3. The
 two results are the same fact seen from two directions.
 
@@ -331,11 +334,12 @@ and each one had produced a plausible-looking zero:
 The engine runs a million neurons and learns online, in one pass, with no
 backpropagation, and the number is reproducible. It is not competitive with a
 n-gram at this data budget, and the capacity measurement says why in a way that
-does not depend on the corpus: **the pool holds one input.**
+does not depend on the corpus: **the pool holds two to three inputs, and no
+parameter setting gets it past four.**
 
-One input of memory is a bigram with extra noise. That is enough to beat a
-uniform baseline and to contribute 0.29 bits over its own readout, and not
-enough to beat a counting table that gets the bigram exactly right.
+Two or three inputs of memory is a bigram with a short smear. That is enough to
+beat a uniform baseline and to contribute 0.29 bits over its own readout, and
+not enough to beat a counting table that gets the bigram exactly right.
 
 An earlier version of this section guessed that the fix was more synapses per
 cell. That was measured and it is wrong: eight times the fan-out at the same

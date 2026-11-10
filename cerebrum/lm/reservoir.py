@@ -81,6 +81,7 @@ class SparseReservoir:
         refractory: int = 2,
         g_adapt: float = 0.30,
         tau_adapt: float = 150.0,
+        tau_adapt_spread: float = 0.0,
         bias: float = 0.06,
         w_scale: float = 8.0,
         ginh: float = 30.0,
@@ -94,6 +95,15 @@ class SparseReservoir:
         self.refractory = int(refractory)
         self.g_adapt = float(g_adapt)
         self.tau_adapt = float(tau_adapt)
+        # Heterogeneous adaptation. Cortical neurons do not share one
+        # adaptation time constant — they span tens to hundreds of
+        # milliseconds, and that spread is a bank of leaky integrators with
+        # different horizons. One constant makes every cell forget at the same
+        # rate, which is exactly a single-pole low-pass filter; a spread
+        # encodes a weighted history over a range of scales in the population
+        # state, which is linear-readable memory that does not require the
+        # recurrence to be non-chaotic.
+        self.tau_adapt_spread = float(tau_adapt_spread)
         self.ginh = float(ginh)
         self.target_frac = float(target_frac)
         self.beta = 1.0 / self.tau_m
@@ -143,7 +153,15 @@ class SparseReservoir:
         self._one_minus_beta = np.float32(1.0 - self.beta)
         self._bias_beta = np.float32(self.bias * self.beta)
         self._k_adapt = np.float32(self.g_adapt * self.beta)
-        self._adapt_decay = np.float32(1.0 - 1.0 / self.tau_adapt)
+        if self.tau_adapt_spread > 0.0:
+            lo = self.tau_adapt / (1.0 + self.tau_adapt_spread)
+            hi = self.tau_adapt * (1.0 + self.tau_adapt_spread)
+            self.tau_adapt_arr = np.exp(
+                rng.uniform(np.log(lo), np.log(hi), self.n)).astype(np.float32)
+            self._adapt_decay = (1.0 - 1.0 / self.tau_adapt_arr).astype(np.float32)
+        else:
+            self.tau_adapt_arr = None
+            self._adapt_decay = np.float32(1.0 - 1.0 / self.tau_adapt)
 
     # -- dynamics --------------------------------------------------------
 
