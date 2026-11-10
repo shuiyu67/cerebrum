@@ -74,3 +74,59 @@ def test_partial_observability_switch_changes_the_drive():
     idx_full2, _ = full._drive(np.array([0.0, 0.9], np.float32))
     idx_part2, _ = part._drive(np.array([0.0, 0.9], np.float32))
     assert idx_full2.size > 0 and idx_part2.size == 0
+
+
+def test_unsigned_gate_pushes_weights_one_way():
+    """The gate has to be signed, and this measures why.
+
+    `-abs(error)` is always negative, so every active synapse is weakened on
+    every frame. Over a few hundred frames that is not a learning rule, it is a
+    global inhibitory clamp — and measured, it collapses the pool to the
+    never-jump score within one episode. A signed error balances because
+    predicting too early and too late pull in opposite directions.
+    """
+    rng = np.random.default_rng(0)
+    errs = rng.normal(0.0, 0.25, 4000)
+
+    signed = float(np.mean(-errs))
+    unsigned = float(np.mean(-np.abs(errs)))
+
+    assert abs(signed) < 0.05, "signed gate is biased: %.4f" % signed
+    assert unsigned < -0.1, "unsigned gate is not one-way: %.4f" % unsigned
+
+
+def test_online_loop_updates_both_layers():
+    """Readout and pool must both move in the online loop, from one pass.
+
+    Uses a small pool on purpose: the assertion is that the update happens and
+    is bounded, not that the controller is any good at this size.
+    """
+    from cerebrum.control.arm import ArmController
+    from cerebrum.control.dino import DinoGame
+
+    ctrl = ArmController(n_neurons=600, fan_out=32, n_bins=64, n_obs=11,
+                         steps_per_action=2, w_scale=2.0, ginh=400.0,
+                         target_frac=0.0, stdp=0.01, three_factor=1.0, seed=0)
+    w0 = ctrl.pool.w.copy()
+    W = np.zeros(64, np.float32)
+    b = 0.35
+    game = DinoGame(seed=0, max_frames=120)
+    obs = game.reset()
+    prev = None
+    while True:
+        f = ctrl.features(obs)
+        pred = float(W @ f) + b
+        err = pred - float(obs[2])
+        W -= np.float32(0.01 * err) * f
+        b -= 0.01 * err * 0.05
+        a = abs(err)
+        if prev is not None:
+            ctrl.pool.apply_reward(prev - a)
+        prev = a
+        obs, _r, done = game.step(pred < 13.0 / 60.0)
+        if done:
+            break
+
+    assert np.abs(W).sum() > 0.0, "readout never moved"
+    drift = float(np.abs(ctrl.pool.w - w0).mean())
+    assert 0.0 < drift < 0.5, "pool drift out of range: %.4f" % drift

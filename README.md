@@ -705,6 +705,87 @@ against 0.932. What it establishes is narrower and more important: **the
 synapses can be trained by a local rule, and the reason earlier attempts failed
 was that the network was running 100x too fast for the rule to see causality.**
 
+## Learning and acting at the same time
+
+Every experiment above separates training from use: fit the readout on a batch,
+freeze the pool, then measure. Cortex does not work that way, and a system whose
+synapses only move during a training phase is not learning, it is being
+sculpted. `examples/dino_online.py` closes the loop — one pass per frame does
+the predicting, the acting, and the changing, before the next frame arrives.
+
+There is no teacher in it. `obs[2]` is time-to-impact, one of the eleven
+numbers the pool already receives, so the error is the gap between what the
+readout predicts from the pool's state and what the same frame says about
+itself. That is prediction coding.
+
+### Two details decide whether it works, and both were found by measuring
+
+**The gate has to be signed.** Using `-abs(error)` as the reward looks natural
+— bigger error, bigger punishment — and it destroys the pool inside one
+episode: every active synapse is weakened on every frame, which is a global
+inhibitory clamp, not a learning rule. Mean weight change per frame 0.077,
+against 0.0006 for the offline pass that worked, and the score collapses to 117
+(the never-jump floor) before the first cactus is reached. The signed error
+balances, because predicting too early and predicting too late pull in opposite
+directions.
+
+**The gate has to be a change in error, not the error.** A single-frame
+prediction error says how good the *readout* is. It says nothing about whether
+the pool's last few milliseconds helped, so feeding it to the eligibility trace
+credits synapses for something they did not do. The temporal difference
+`|e_{t-1}| - |e_t|` — did this get better than a moment ago — is what flips the
+pool's online plasticity from harmful to useful:
+
+| gate | pool plasticity | late-episode mean |
+|---|---|---|
+| raw error | 2.5 | 243 |
+| raw error | 25 | 217 |
+| **td error** | **2.5** | **288** |
+| td error | 250 | 117 (collapsed) |
+
+Raw error at any gain sits below the frozen baseline; td error at the same gain
+reaches it.
+
+### And then it helps
+
+Three seeds, fourteen episodes each, weights persisting across episodes and
+membrane state reset:
+
+| condition | early | late | best episode |
+|---|---|---|---|
+| frozen | 347 | 282 | 1455 |
+| readout online | 458 | 310 | 1255 |
+| **readout + pool online** | 465 | **468** | **2000** |
+
+Late-episode mean per seed, frozen against both-online: 403 vs 456, 200 vs 305,
+244 vs 642 — **3/3**.
+
+Two things are worth reading off that table. The pool's plasticity is worth
++43% at the end of a lifetime. More interesting is the shape: both of the
+non-plastic conditions *decline* from early to late episodes, while the one
+with synaptic plasticity is flat. The readout drifts as its input distribution
+moves and the pool pushes back against that drift. Something that only got
+faster would show a rising curve; this shows a curve that stops falling, which
+is what a homeostatic mechanism looks like.
+
+### What is still wrong
+
+**The per-episode curve is violent.** Individual episodes range from 125 to
+2000 frames, and the figure shows three seeds crossing each other constantly.
+The trend is real (3/3 seeds, consistent shape) and the effect is small against
+that variance — this is a direction, not a solved controller.
+
+**The whole system still drifts.** Even the plastic condition's mean is not
+rising; it is holding. A lifetime here is 3000 frames, which is three seconds
+of behaviour. Nothing in this file runs long enough to ask whether it keeps
+holding for an hour, or whether it forgets: catastrophic forgetting needs a
+lifetime long enough to have something worth forgetting.
+
+**Nothing here is autonomous.** The pool still goes silent the moment input
+stops — the neuron sheet in `dino_brain.mp4` fades to black within a dozen
+frames of the crash. A system that learns while acting is not the same as a
+system that is alive; it is the first of the properties, not all of them.
+
 ## The substrate engine
 
 The original engine — `cerebrum.core.Brain` — is still here and still what the
