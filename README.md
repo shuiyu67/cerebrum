@@ -624,6 +624,87 @@ game — it clearly beats doing nothing, and the video shows it clearing cacti
 for nine seconds — but it does not beat a three-line rule, and no amount of
 extra neurons closed the gap in the time available.
 
+## Why the pool could not learn, and what fixed it
+
+Six local plasticity rules were tried earlier in this file and all of them lost
+to freezing the pool. The biology explains why, and the fix is a structural
+change rather than a better rule.
+
+### The number that was wrong by two orders of magnitude
+
+| quantity | real cortex | this pool (before) |
+|---|---|---|
+| mean firing rate | **0.7 Hz** (Buzsaki & Mizuseki 2014) | **80-100 Hz** |
+| synapses per neuron | 3000-4000 | 32 |
+| E/I ratio | 4:1 | 4:1 |
+
+A cortical neuron fires once every 1.4 s while receiving ~4200 inputs per
+second from 6000 synapses. This pool fires every 10 ms.
+
+**The STDP causal window is 20 ms.** At 80 Hz each cell has already fired twice
+inside the window that STDP uses to decide order, so the rule is not seeing
+causality — it is seeing a continuous stream and averaging it to zero. That is
+what "the eligibility trace has no direction" measured earlier actually was.
+
+### Sparse alone is worse, not better
+
+Throttling the rate without touching the connectivity destroys the code:
+
+| ginh | rate | inputs/s/cell | TTI decode R2 |
+|---|---|---|---|
+| 20 | 81 Hz | 2,602 | 0.984 |
+| 400 | 28 Hz | 897 | 0.888 |
+| 6400 | 4.6 Hz | 147 | **0.239** |
+
+At biological rates with 32 synapses, a cell receives 147 inputs per second —
+the signal is buried. Cortex avoids this with connectivity, not with gain.
+
+### Sparse *and* well connected works
+
+| fan-out | rate | inputs/s/cell | R2 |
+|---|---|---|---|
+| 32 | 81 Hz | 2,602 | 0.984 |
+| **128** | **28.7 Hz** | 3,677 | **0.932** |
+| 512 | 18 Hz | 9,165 | 0.867 |
+
+One third of the firing rate at four times the connectivity keeps 95% of the
+code quality — at a third of the spikes.
+
+### And then plasticity works, for the first time
+
+At fan-out 128 and 28 Hz, three-factor plasticity (STDP eligibility gated by
+the readout's error) was applied to the pool's own synapses:
+
+| three-factor gain | R2 change |
+|---|---|
+| 0 (control) | **−0.0130** |
+| 5 | +0.0026 |
+| 50 | +0.0084 |
+| 500 | **+0.0113** |
+
+Monotone, with a negative control. Every earlier configuration had this
+quantity negative at every gain.
+
+### The pool is measurably better afterwards
+
+Not a proxy — same readout budget for both pools (1500 frames, ridge), so the
+only variable is the synapses:
+
+| pool | mean score | best score |
+|---|---|---|
+| random (untrained) | 178 | 361 |
+| **trained by three-factor plasticity** | **259** | **1213** |
+
+**+46% mean, +236% best, at 33 Hz.** The video
+``data/dino_learned.mp4`` is this pool playing: left of the readout, the
+synapses are no longer the ones it started with.
+
+This does not make it a good controller — the high-rate dense pool still scores
+higher on the absolute scale (3000 vs 1400) because its code quality is 0.984
+against 0.932. What it establishes is narrower and more important: **the
+synapses can be trained by a local rule, and the reason earlier attempts failed
+was that the network was running 100x too fast for the rule to see causality.**
+
 ## The substrate engine
 
 The original engine — `cerebrum.core.Brain` — is still here and still what the

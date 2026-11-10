@@ -41,10 +41,19 @@ def load_policy(path: str = "data/dino_pool.npz", threshold: float = 13.0 / 60.0
     runs the full 3000.
     """
     d = np.load(path)
-    ctrl = ArmController(n_neurons=int(d["n_neurons"]), fan_out=32,
-                         n_bins=int(d["n_bins"]), n_obs=int(d["n_obs"]),
+    kw = {}
+    if "fan_out" in d:
+        kw = dict(fan_out=int(d["fan_out"]), w_scale=float(d["w_scale"]),
+                  ginh=float(d["ginh"]))
+    ctrl = ArmController(n_neurons=int(d["n_neurons"]), n_bins=int(d["n_bins"]),
+                         n_obs=int(d["n_obs"]),
                          steps_per_action=int(d["steps_per_action"]),
-                         w_scale=4.0, ginh=20.0, target_frac=0.0, seed=0)
+                         target_frac=0.0, seed=0,
+                         **(kw if kw else dict(fan_out=32, w_scale=4.0, ginh=20.0)))
+    # A file containing "w" carries a pool whose synapses were trained, not
+    # just a readout fitted on top of a random one.
+    if "w" in d:
+        ctrl.pool.w[:] = d["w"]
     return ctrl, d["W_mu"], float(d["bias"]), threshold, smooth
 
 
@@ -57,18 +66,23 @@ def brain_image(glow: np.ndarray, rows: int, perm: np.ndarray) -> np.ndarray:
     rather than as a population.
     """
     cols = glow.size // rows
-    g = glow[perm].reshape(rows, cols)
+    g = glow[perm][:rows * cols].reshape(rows, cols)
     # A dim floor keeps the sheet from being pure black, so the firing pattern
     # reads as activity on a substrate rather than as light in a void.
     rgb = (g[:, :, None] * np.array([70.0, 205.0, 255.0], np.float32)
            + np.array([10.0, 12.0, 18.0], np.float32)).astype(np.uint8)
-    return np.repeat(np.repeat(rgb, GAME_W // cols, axis=1),
-                     BRAIN_H // rows, axis=0)
+    # Upscale by whole pixels then crop: the neuron count rarely divides the
+    # panel exactly, and a fractional repeat silently produced a sheet 40 px
+    # narrower than the game above it.
+    sx = -(-GAME_W // cols)
+    sy = -(-BRAIN_H // rows)
+    img = np.repeat(np.repeat(rgb, sx, axis=1), sy, axis=0)
+    return img[:BRAIN_H, :GAME_W]
 
 
 def render(seed: int = 4259, out: str = "data/dino.mp4", max_frames: int = 3000,
-           after_death: int = 540) -> None:
-    ctrl, Wmu, bias, th, smooth = load_policy()
+           after_death: int = 540, pool_path: str = "data/dino_pool.npz") -> None:
+    ctrl, Wmu, bias, th, smooth = load_policy(pool_path)
     ctrl.pool.reset()
     game = DinoGame(seed=seed, max_frames=max_frames)
     obs = game.reset()
@@ -140,6 +154,8 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="data/dino.mp4")
     ap.add_argument("--after-death", type=int, default=540,
                     help="frames to keep recording after the dino dies")
+    ap.add_argument("--pool", default="data/dino_pool.npz")
     args = ap.parse_args()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    render(seed=args.seed, out=args.out, after_death=args.after_death)
+    render(seed=args.seed, out=args.out, after_death=args.after_death,
+           pool_path=args.pool)

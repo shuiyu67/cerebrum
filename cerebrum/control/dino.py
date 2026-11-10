@@ -47,9 +47,19 @@ DINO_H = 32
 class DinoGame:
     """One dino, cacti, and a score."""
 
-    def __init__(self, seed: int = 0, max_frames: int = 3000) -> None:
+    def __init__(self, seed: int = 0, max_frames: int = 3000,
+                 max_speed: float = 15.0) -> None:
         self.rng = np.random.default_rng(seed)
         self.max_frames = int(max_frames)
+        # Ceiling on the scroll speed. 15 is the shipped setting; raising it
+        # shrinks the reaction window and turns an easy task into one where
+        # a controller trained at 15 falls apart — useful for asking whether
+        # anything actually improves after the readout is already saturated.
+        self.max_speed = float(max_speed)
+        # Frames per unit of speed increase. 600 is the shipped ramp, which
+        # reaches speed 10 by frame 3000 and never touches the ceiling. Smaller
+        # values make the game genuinely harder.
+        self.speed_ramp = 600.0
         self.reset()
 
     # -- lifecycle -------------------------------------------------------
@@ -141,7 +151,7 @@ class DinoGame:
 
         self.frame += 1
         self.score += 1
-        self.speed = min(15.0, 5.0 + self.frame / 600.0)
+        self.speed = min(self.max_speed, 5.0 + self.frame / self.speed_ramp)
 
         if hit:
             self.dead = True
