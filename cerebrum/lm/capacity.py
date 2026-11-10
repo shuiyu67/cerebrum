@@ -61,7 +61,33 @@ Measured on the pool used by the language model:
 * Balanced regime (small weights, strong inhibition, 0.5% target activity):
   capacity collapses to 0.05-0.12. A quiet pool has no memory either.
 
-**The pool holds one input.** Every parameter that could plausibly extend it
+**The pool holds one input, and the reason is chaos.** The pool is
+deterministic, so its dynamics can be probed exactly: perturb one copy with an
+extra millimetre of input, run both in silence, and watch the separation grow.
+It grows. The largest Lyapunov exponent is positive from ``w`` ~ 1.3 upward and
+rises monotonically (0.006 at w=1.5, 0.029 at w=2.2, 0.096 at w=6, 0.15 at
+w=12), and the *direction* of the separation decorrelates within one
+millisecond at the operating weight (cosine 0.46 after 1 ms, 0.13 after 6 ms).
+
+A chaotic network does not store and release a state; it amplifies any
+difference until it saturates and then replaces it with an unrelated one. What
+survives is the current input, which is re-injected every millisecond and
+therefore dominates the chaotic background. Capacity one is the direct
+consequence.
+
+Nothing that was tried moves the exponent below zero: fan-out 32 -> 256,
+adaptation off, membrane time constant 20 -> 80 ms, inhibitory gain 2 -> 600,
+and removing the inhibitory dead zone entirely (``target_frac = 0``, so the
+pool is under proportional feedback at all activity levels instead of only
+above 3%). A *global* inhibitory pool cannot fix this, because chaos is a
+property of how microscopic differences diverge, and one scalar applied to
+every cell only sets the mean rate.
+
+The best operating point found is ``w = 6, ginh = 2, target_frac = 0``, which
+scores MC 0.92 at depth 3 — still chaotic, but with a longer decorrelation
+time. That is the direction to push, not synapse count.
+
+**The pool holds one input at its shipped settings.** Every parameter that could plausibly extend it
 has been swept, and the depth does not move. This is not a tuning failure; it
 is the operating point of a random recurrent network with single-spike-triggered
 firing, where a cell needs only two or three coincident inputs to cross
@@ -124,6 +150,63 @@ def collect_states(pool: SparseReservoir, u: np.ndarray, *, hold: int = HOLD,
                 state *= (1.0 - ema)
         X[t] = state
     return X
+
+
+def _snapshot(pool: SparseReservoir):
+    return (pool.v.copy(), pool.adapt.copy(), pool.refr.copy(),
+            pool.prev.copy())
+
+
+def _restore(pool: SparseReservoir, state) -> None:
+    pool.v[:], pool.adapt[:], pool.refr[:] = state[0], state[1], state[2]
+    pool.prev = state[3].copy()
+
+
+def _settle(pool: SparseReservoir, steps: int = 600, seed: int = 0) -> None:
+    """Drive the pool to its operating point with random input."""
+    n_in = max(1, int(pool.n * COVER / 2))
+    pos, neg, thr = _input_populations(n_in, seed)
+    rng = np.random.default_rng(1)
+    for _ in range(steps):
+        val = float(rng.uniform(-1, 1))
+        ext = pos[thr < val] if val > 0 else neg[thr < -val]
+        pool.step(ext, ext_val=0.9)
+
+
+def lyapunov(pool: SparseReservoir, steps: int = 5) -> float:
+    """Largest Lyapunov exponent per millisecond, from a twin trajectory.
+
+    The pool is deterministic, so two copies that are perturbed identically
+    stay identical — which makes this exact rather than statistical. One copy
+    gets an extra millimetre of input, both are then run in silence, and the
+    growth rate of their separation is the exponent.
+
+    Positive means nearby states separate exponentially: the network forgets
+    by destroying information, not by letting it decay.
+    """
+    _settle(pool)
+    base = _snapshot(pool)
+    n_in = max(1, int(pool.n * COVER / 2))
+    pos, _neg, thr = _input_populations(n_in, 0)
+
+    pool.step(pos[thr < 1.0], ext_val=0.9)
+    a = _snapshot(pool)
+    _restore(pool, base)
+    pool.step(None)
+    b = _snapshot(pool)
+
+    r0 = float(np.linalg.norm(a[0] - b[0])) + 1e-12
+    for _ in range(steps):
+        _restore(pool, a)
+        pool.step(None)
+        a = _snapshot(pool)
+        _restore(pool, b)
+        pool.step(None)
+        b = _snapshot(pool)
+        if float(np.linalg.norm(a[0] - b[0])) > 2.0:
+            break
+    rt = float(np.linalg.norm(a[0] - b[0])) + 1e-12
+    return float(np.log(rt / r0) / steps)
 
 
 def _ridge_r2(X: np.ndarray, y: np.ndarray, lam: float = 1e-2) -> float:

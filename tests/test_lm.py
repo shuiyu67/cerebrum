@@ -172,3 +172,33 @@ def test_input_drive_accepts_per_cell_current():
     assert a > 0, "vector current drove nothing"
     assert b > 0, "scalar current drove nothing"
     assert a != b, "vector and scalar produced identical counts"
+
+
+def test_pool_is_chaotic_at_its_operating_weight():
+    """The reason capacity is one: nearby states diverge, they do not decay.
+
+    Deterministic twin-trajectory measurement, so this is not a statistical
+    estimate. At the shipped operating weight the exponent is clearly positive;
+    a positive value means the network destroys the direction of a past input
+    within a few milliseconds instead of holding it.
+    """
+    from cerebrum.lm.capacity import lyapunov
+
+    pool = SparseReservoir(40_000, 32, w_scale=6.0, ginh=30.0, seed=0)
+    pool.g_adapt = 0.0
+    pool._k_adapt = np.float32(0.0)
+    lam = lyapunov(pool)
+    assert lam > 0.01, "pool is not chaotic at w=6: lambda=%.4f" % lam
+
+
+def test_chaos_boundary_is_near_w_equals_one():
+    """Below the boundary the pool is stable but barely active — which is why
+    there is no operating point that is both stable and carries information."""
+    from cerebrum.lm.capacity import lyapunov
+
+    pool = SparseReservoir(40_000, 32, w_scale=1.2, ginh=30.0, seed=0)
+    pool.g_adapt = 0.0
+    pool._k_adapt = np.float32(0.0)
+    lam = lyapunov(pool)
+    assert lam < 0.01, "expected a stable pool at w=1.2: lambda=%.4f" % lam
+    assert 5.0 < pool.rate_hz() < 30.0, "rate %.1f" % pool.rate_hz()

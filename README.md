@@ -266,6 +266,48 @@ over several. Spike-frequency adaptation then suppresses the cells that were
 just active, which is why switching it off doubles the single-step capacity
 while leaving the depth at one.
 
+### Why one, specifically
+
+The pool is deterministic, so its dynamics can be probed exactly: take two
+identical copies, give one an extra millimetre of input, then run both in
+silence and watch the separation. It grows. The largest Lyapunov exponent is
+positive from `w ≈ 1.3` upward and rises monotonically:
+
+| w | λ (per ms) | rate | capacity | depth |
+|---|---|---|---|---|
+| 1.2 | −0.001 | 13 Hz | 0.32 | 1 |
+| 2.2 | +0.029 | 17 Hz | 0.63 | 2 |
+| 6.0 | +0.096 | 45 Hz | 0.67 | 1 |
+| 12 | +0.150 | 108 Hz | 0.32 | 1 |
+
+At the shipped weight the *direction* of the separation decorrelates within a
+millisecond (cosine 0.46 after 1 ms, 0.13 after 6 ms). A chaotic network does
+not hold a state and release it later; it amplifies any difference until it
+saturates and replaces it with an unrelated one.
+
+**A global inhibitory pool cannot fix this.** The exponent stays positive when
+the inhibitory gain is swept from 2 to 600, when adaptation is removed, when
+the membrane time constant goes from 20 to 80 ms, when fan-out goes from 32 to
+256, and when the inhibitory dead zone is removed entirely (`target_frac = 0`,
+so the pool is under proportional feedback at every activity level instead of
+only above 3%). Chaos is a property of how *microscopic* differences diverge;
+one scalar applied to every cell only sets the mean rate.
+
+Two consequences worth stating plainly:
+
+- **There is no window that is both stable and informative.** At the chaos
+  boundary the pool is stable but runs at 13 Hz with capacity 0.32; by the time
+  capacity peaks the network is already chaotic. The two requirements are met
+  on opposite sides of the same line.
+- **The best point found** is `w = 6, ginh = 2, target_frac = 0`: capacity
+  0.92 at depth 3, still chaotic but with a longer decorrelation time. That is
+  where to push, not synapse count.
+
+What would actually give long memory is either designed rather than random
+connectivity (the hippocampal module in `cerebrum/brain` does exactly this, and
+completes patterns at 0.69 from a partial cue), or plasticity that moves the
+spectral radius below the chaos threshold.
+
 **This also closes the loop on the language model.** A pool with one input of
 memory *is* a bigram with extra noise — which is exactly what was measured:
 4.68 bits against 4.36 for a counting table, and recall that dies at k=3. The
