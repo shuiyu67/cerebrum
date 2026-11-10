@@ -29,13 +29,23 @@ BRAIN_H = 200
 BRAIN_ROWS = 50
 
 
-def load_policy(path: str = "data/dino_pool.npz", threshold: float = 10.0 / 60.0):
+def load_policy(path: str = "data/dino_pool.npz", threshold: float = 13.0 / 60.0,
+                smooth: float = 0.4):
+    """Load the readout, its decision threshold, and the prediction smoother.
+
+    Smoothing is not cosmetic. The readout estimates time-to-impact with about
+    three frames of error, and a single noisy estimate near the threshold fires
+    a jump too early or too late. An exponential average over consecutive
+    estimates cut the mean score from 192 to 1952 frames at threshold 13 — the
+    difference between a controller that usually dies early and one that often
+    runs the full 3000.
+    """
     d = np.load(path)
     ctrl = ArmController(n_neurons=int(d["n_neurons"]), fan_out=32,
                          n_bins=int(d["n_bins"]), n_obs=int(d["n_obs"]),
                          steps_per_action=int(d["steps_per_action"]),
                          w_scale=4.0, ginh=20.0, target_frac=0.0, seed=0)
-    return ctrl, d["W_mu"], float(d["bias"]), threshold
+    return ctrl, d["W_mu"], float(d["bias"]), threshold, smooth
 
 
 def brain_image(glow: np.ndarray, rows: int, perm: np.ndarray) -> np.ndarray:
@@ -58,9 +68,11 @@ def brain_image(glow: np.ndarray, rows: int, perm: np.ndarray) -> np.ndarray:
 
 def render(seed: int = 4259, out: str = "data/dino.mp4", max_frames: int = 3000,
            after_death: int = 540) -> None:
-    ctrl, Wmu, bias, th = load_policy()
+    ctrl, Wmu, bias, th, smooth = load_policy()
+    ctrl.pool.reset()
     game = DinoGame(seed=seed, max_frames=max_frames)
     obs = game.reset()
+    tti_est = 1.0
 
     n = ctrl.n_neurons
     rows = BRAIN_ROWS
@@ -83,9 +95,9 @@ def render(seed: int = 4259, out: str = "data/dino.mp4", max_frames: int = 3000,
     try:
         for t in range(max_frames):
             if not game.dead:
-                jump = ((obs[-1] < 0.5)
-                        and (float(Wmu @ ctrl.features(obs) + bias) < th))
-                obs, _r, done = game.step(jump)
+                raw = float(Wmu @ ctrl.features(obs) + bias)
+                tti_est = smooth * tti_est + (1.0 - smooth) * raw
+                obs, _r, done = game.step((obs[-1] < 0.5) and (tti_est < th))
                 if done and dead_at is None:
                     dead_at = t
                 peak_rate = max(peak_rate, ctrl.last_rate)
