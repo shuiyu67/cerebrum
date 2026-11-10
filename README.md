@@ -397,6 +397,52 @@ under-tuned, it is at its structural limit, and the limit is the single-spike
 trigger — a cell needs two or three coincident inputs to fire, so it never
 integrates and anything older than a few milliseconds has been overwritten.
 
+### Learning made it worse, three times
+
+The pool is frozen at initialisation, which is why the readout is the only
+thing that ever learns and why the pool is worth 0.05 bits. Three local rules
+were added to change that. All three were measured against a frozen control
+that reproduced to the digit (+0.083 / capacity 0.80 / cv 0.109 on three
+successive probes), so the numbers are clean.
+
+| rule | lambda | capacity | in-norm cv |
+|---|---|---|---|
+| frozen control | +0.083 | **0.80** | 0.109 |
+| synaptic scaling, outgoing | +0.221 | 0.61 | 0.873 |
+| synaptic scaling, incoming | +0.223 | 0.61 | 0.873 |
+| STDP + hard in-norm, lr 0.002 | +0.079 | 0.61 | 0.000 |
+| STDP + hard in-norm, lr 0.01 | +0.062 | 0.48 | 0.000 |
+
+Two failure modes, pointing at the same thing.
+
+**Scaling on the wrong side runs away.** Acting on outgoing synapses controls
+the neighbours, not the cell: 23 Hz -> 135 Hz within 1500 steps, output norm
+23.9 -> 86.9 (the clip ceiling times fan-out), capacity 0.80 -> 0.13. A silent
+cell had its outgoing weights amplified to the maximum and then fired a volley
+into its targets. Moving the rule to incoming synapses fixed the direction and
+not the outcome — the spread grew from cv 0.11 to 0.87, because cells that
+never fired were amplified to the ceiling while cells that fired constantly
+were cut to nearly nothing.
+
+**Enforcing uniformity destroys the capacity.** The Song-Abbott constraint holds
+every cell's incoming norm fixed, which is what keeps the exponent from moving
+(+0.083 -> +0.062 rather than exploding). It also drives the norm spread to
+exactly cv 0.000, and capacity falls to 0.48. Output normalisation did the same
+earlier: 0.80 -> 0.48. A random pool draws its capacity from heterogeneity —
+different cells happen to be sensitive to different input histories — and every
+rule that cleans that heterogeneity up removes the very thing being read out.
+
+The honest summary: **an unsupervised local rule cannot know which
+heterogeneity to keep.** It can only enforce a statistic (a rate, a norm), and
+every statistic it can enforce is orthogonal to the one that matters.
+
+What that leaves is a rule that is local in its *mechanism* but not in its
+*objective*: a three-factor rule, where a per-synapse eligibility trace from
+STDP is multiplied by one global scalar — the readout's prediction error. The
+trace stays local; the scalar is a single number for the whole pool. That is
+the only variant here that could carry task information into the synapses
+without a backward pass.
+
 ### What this means
 
 The engine runs a million neurons and learns online, in one pass, with no

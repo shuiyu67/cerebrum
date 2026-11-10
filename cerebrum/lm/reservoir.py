@@ -90,6 +90,13 @@ class SparseReservoir:
         inh_frac: float = 0.2,
         normalize_out: bool = False,
         regular: bool = False,
+        plasticity: float = 0.0,
+        target_rate_hz: float = 10.0,
+        plasticity_every: int = 10,
+        stdp: float = 0.0,
+        tau_trace: float = 20.0,
+        a_plus: float = 1.0,
+        a_minus: float = 1.05,
         seed: int = 0,
     ) -> None:
         self.n = int(n)
@@ -215,6 +222,83 @@ class SparseReservoir:
         self.spikes_total = 0
         self.steps_total = 0
 
+        # --- plasticity -------------------------------------------------
+        # Everything above freezes the pool at initialisation. That is the
+        # reason the readout is the only thing that ever learns, and the
+        # reason the pool is worth 0.05 bits: a fixed random projection
+        # carries a fixed amount of information, and no amount of training on
+        # top of it can exceed that.
+        #
+        # The first rule here is synaptic scaling (Turrigiano 1998), and it is
+        # deliberately the most local rule available: a cell compares its own
+        # recent firing rate against a target and multiplies its own outgoing
+        # synapses by a factor. No reverse index, no error signal, no gradient,
+        # nothing global. One float per neuron is the entire state.
+        #
+        # It attacks the actual failure mode rather than a symptom. Chaos here
+        # starts with a cell that fires slightly more than its neighbours,
+        # receives more input because of it, and fires more still. Scaling
+        # cuts that loop at the cell: the ones running hot turn their own
+        # output down, so the divergence has nowhere to build. If that is
+        # right, the pool should walk itself to lambda ~ 0 without anyone
+        # tuning w or ginh.
+        self.plasticity = float(plasticity)
+        self.target_rate = float(target_rate_hz) / 1000.0
+        self.plasticity_every = max(1, int(plasticity_every))
+        self.rate_ema = np.zeros(self.n, np.float32)
+        self._rate_decay = np.float32(np.exp(-1.0 / 100.0))
+        self._rate_step = np.float32(1.0 - self._rate_decay)
+        self.w_max = np.float32(max(1e-6, abs(float(w_scale)) * 4.0))
+        self.plasticity_updates = 0
+
+        # Scaling has to act on *incoming* synapses. A cell that fires too
+        # much must weaken what it receives; acting on the outgoing block
+        # controls the neighbours, not the cell. Measured the wrong way round:
+        # 23 Hz -> 135 Hz within 1500 steps, output norm 23.9 -> 86.9 (the
+        # clip ceiling times the fan-out), capacity 0.80 -> 0.13. A silent
+        # cell had its outgoing weights amplified to the maximum and then
+        # fired a volley into its targets.
+        #
+        # Post-synaptic grouping is a one-off sort; the synapses never move,
+        # so this index is built once and reused for every update.
+        self._order = None
+        self._post_sorted = None
+        if self.plasticity > 0.0:
+            self._order = np.argsort(self.post, kind="stable")
+            self._post_sorted = self.post[self._order].astype(np.int64)
+
+        # --- STDP -------------------------------------------------------
+        # Scaling only touches amplitudes, and amplitude is the knob that sets
+        # the Lyapunov exponent, which is the knob that sets capacity.
+        # Measured: per-cell scaling drives the incoming-norm spread from
+        # cv 0.11 to 0.87 and pushes lambda from +0.083 to +0.221. It cannot
+        # escape the lambda/capacity trade-off because it *is* that trade-off,
+        # automated.
+        #
+        # Spike-timing dependent plasticity changes a different thing: which
+        # path is strong, not how strong the cell is overall. Paired with a
+        # hard incoming-norm constraint (Song & Abbott 2000), the total input
+        # per cell is held fixed, so the population gain stays put while the
+        # distribution is free to specialise. If capacity rises at a fixed
+        # exponent, the information lives in the weights rather than in the
+        # gain - which is the only way the ceiling measured here can move.
+        self.stdp = float(stdp)
+        self._a_plus = float(a_plus)
+        self._a_minus = float(a_minus)
+        self.tau_trace = float(tau_trace)
+        self._trace_decay = np.float32(np.exp(-1.0 / self.tau_trace))
+        self.pre_trace = np.zeros(self.n, np.float32)
+        self.post_trace = np.zeros(self.n, np.float32)
+        self._pre_sorted = None
+        self._target_in_norm = float(abs(w_scale)) * np.sqrt(self.fan_out)
+        self.stdp_updates = 0
+        if self.stdp > 0.0:
+            if self._order is None:
+                self._order = np.argsort(self.post, kind="stable")
+                self._post_sorted = self.post[self._order].astype(np.int64)
+            pre_index = np.repeat(np.arange(self.n, dtype=np.int32), self.fan_out)
+            self._pre_sorted = pre_index[self._order]
+
         # Preallocated temporaries and folded constants for the in-place
         # update. Allocating these per step was most of the runtime.
         self._inbuf = np.zeros(self.n, np.float32)
@@ -316,7 +400,123 @@ class SparseReservoir:
         self.prev = idx
         self.spikes_total += int(idx.size)
         self.steps_total += 1
+
+        if self.plasticity > 0.0:
+            # Exponentially weighted firing rate, ~100 ms. A cell that fires
+            # once steps its estimate up by one minus the decay, which is the
+            # standard way to read a rate out of spikes without a counter.
+            self.rate_ema *= self._rate_decay
+            if idx.size:
+                self.rate_ema[idx] += self._rate_step
+            if self.steps_total % self.plasticity_every == 0:
+                self._scale_synapses()
+
+        if self.stdp > 0.0:
+            self.pre_trace *= self._trace_decay
+            self.post_trace *= self._trace_decay
+            if idx.size:
+                self.pre_trace[idx] += 1.0
+                self.post_trace[idx] += 1.0
+                self._stdp_update(idx)
+            if self.steps_total % self.plasticity_every == 0:
+                self._normalize_incoming()
+
         return idx
+
+    def _stdp_update(self, idx: np.ndarray) -> None:
+        """The classic pair rule, applied as two independent vectorised passes.
+
+        Depression first, on the outgoing block of the cells that just fired:
+        each of their synapses is weakened by how recently its target fired.
+        Those blocks are contiguous in the shipped layout, so this pass is one
+        gather, one subtract and one scatter.
+
+        Potentiation second, on the incoming synapses of the same cells: each
+        is strengthened by how recently its source fired. In-degree grouping
+        comes from a precomputed sort, so the slice boundaries are a
+        ``searchsorted`` rather than a scan.
+
+        Order matters — depression writes to ``self.w`` directly, and
+        potentiation copies *after* that, so the second pass sees the first
+        one's result. Doing it the other way round silently discards the
+        depression.
+        """
+        lr = self.stdp
+
+        # --- depression (original layout, contiguous per presynaptic cell) --
+        sel = (idx[:, None] * self.fan_out + self._arange[None, :]).ravel()
+        if sel.size:
+            ws = self.w[sel]
+            ws -= lr * self._a_minus * self.post_trace[self.post[sel]]
+            np.clip(ws, -self.w_max, self.w_max, out=ws)
+            self.w[sel] = ws
+
+        # --- potentiation (in-degree order, gathered after depression) ------
+        order = self._order
+        wt = self.w[order]
+        starts = np.searchsorted(self._post_sorted, idx, side="left")
+        ends = np.searchsorted(self._post_sorted, idx, side="right")
+        for s, e in zip(starts, ends):
+            if e > s:
+                sl = slice(int(s), int(e))
+                wt[sl] += lr * self._a_plus * self.pre_trace[self._pre_sorted[sl]]
+        np.clip(wt, -self.w_max, self.w_max, out=wt)
+        self.w[order] = wt
+        self.stdp_updates += 1
+
+    def _normalize_incoming(self) -> None:
+        """Hold every cell's incoming weight norm fixed.
+
+        This is the stabiliser, and it is what makes the rule interesting:
+        STDP decides the *distribution* of strengths onto a cell, this decides
+        the *total*. Without it, potentiation grows without bound and the pool
+        runs away; with it, the only thing that can change is which inputs
+        dominate, which is exactly the quantity that could carry a sequence.
+        """
+        sq = np.bincount(self.post, weights=self.w.astype(np.float64) ** 2,
+                         minlength=self.n)
+        cur = np.sqrt(sq)
+        cur[cur < 1e-9] = 1e-9
+        factor = (self._target_in_norm / cur).astype(np.float32)
+        self.w *= factor[self.post]
+
+    def _scale_synapses(self) -> None:
+        """Scale each cell's *incoming* synapses by its own rate error.
+
+        Synaptic scaling in the sense of Turrigiano: a cell that has been
+        firing above its target weakens everything it receives, a cell below
+        target strengthens. The update uses one scalar per cell and touches
+        only that cell's own incoming synapses, so it is local by
+        construction: no error signal, no reverse pass, no gradient. Cost is
+        one gather, one multiply and one scatter over the synapses.
+
+        The clip is not cosmetic. Without a bound the rule has a fixed point
+        only at zero: cells above target shrink until the pool dies and cells
+        below target grow until it saturates. Bounding at +-4x the initial
+        scale keeps both failure modes finite while still allowing a 4x move,
+        which is much larger than the ~12% spread that separates a stable cell
+        from a chaotic one.
+        """
+        err = (self.target_rate - self.rate_ema) / self.target_rate
+        factor = 1.0 + self.plasticity * err
+        np.clip(factor, 0.5, 2.0, out=factor)
+        f_all = factor[self._post_sorted]
+        ws = self.w[self._order]
+        ws *= f_all
+        np.clip(ws, -self.w_max, self.w_max, out=ws)
+        self.w[self._order] = ws
+        self.plasticity_updates += 1
+
+    def weight_stats(self) -> dict:
+        """Incoming-weight spread. The rule works on in-degree, so the spread
+        it is supposed to remove has to be measured on the same axis."""
+        sq = np.bincount(self.post, weights=self.w.astype(np.float64) ** 2,
+                         minlength=self.n)
+        norms = np.sqrt(sq)
+        return {"mean": float(norms.mean()), "sd": float(norms.std()),
+                "cv": float(norms.std() / (norms.mean() + 1e-12)),
+                "updates": self.plasticity_updates,
+                "rate_hz": self.rate_hz()}
 
     # -- state readout ---------------------------------------------------
 
