@@ -514,6 +514,57 @@ several. Memory of 10-20 steps out of this family of networks needs a balanced
 regime with active gain control, which is a different piece of work from
 scaling this one up.
 
+## The yardstick that fits
+
+Everything above measures the pool in bits per character, which is a language
+model's yardstick. That measurement says the pool is worth 0.05 bits and loses
+to a counting table — true, and a statement about character prediction rather
+than about the pool. A reservoir is built to hold a state and act on it.
+
+So the task changes and the yardstick with it: **an inverted pendulum**, where
+the result is legible without statistics because the pole either falls over or
+it does not.
+
+The readout is still one linear layer, fitted by ridge regression on a PD
+teacher. Starts are randomised over the evaluation range and the environment
+keeps its noise, because training on quiet small-angle rollouts and testing
+under noise produces a controller that looks trained and falls over at once.
+
+| controller | steps held (600 = 6 s) | mean abs(theta) |
+|---|---|---|
+| PD teacher, full state | 600 | 0.062 |
+| **pool readout, trained** | **600** | **0.097** |
+| pool readout, random weights | 36 | 0.210 |
+
+A random readout falls in 0.36 s; the trained one holds the pole for the whole
+six seconds at 5.6 degrees mean deviation, against the teacher's 3.6. The
+spiking pool carries a usable control signal, and nothing was backpropagated
+through its recurrence.
+
+**What that does and does not prove.** An inverted pendulum is linearly
+controllable, so a linear controller is optimal and the pool can only tie. It
+ties. That is the honest reading: the pool is *sufficient*, not *better*.
+
+The test that could show an advantage is partial observability — hide the
+angular velocity and give the pool the angle only. A memoryless linear map
+cannot recover a derivative; a recurrent pool carries the angle's history and
+should. Measured, it recovers part of it:
+
+| controller | input | fit correlation with teacher |
+|---|---|---|
+| linear | angle + velocity | 1.00 |
+| linear | angle only | 0.31 |
+| pool | angle + velocity | 0.98 |
+| pool | angle only | **0.48** (0.58 at 16k neurons) |
+
+So the pool does reconstruct some of the missing derivative from history —
+better than the linear map, and not enough to close the loop: 39 steps against
+the linear controller's 33, where 600 is needed. Partial observability is the
+right place to look and this pool is not yet good enough at it.
+
+Run it with ``python -m examples.pole_control``; the figure lands in
+``data/pole_comparison.png``.
+
 ## The substrate engine
 
 The original engine — `cerebrum.core.Brain` — is still here and still what the
