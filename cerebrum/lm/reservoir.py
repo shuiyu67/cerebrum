@@ -86,6 +86,10 @@ class SparseReservoir:
         w_scale: float = 8.0,
         ginh: float = 30.0,
         target_frac: float = 0.03,
+        dale: bool = False,
+        inh_frac: float = 0.2,
+        normalize_out: bool = False,
+        regular: bool = False,
         seed: int = 0,
     ) -> None:
         self.n = int(n)
@@ -114,7 +118,72 @@ class SparseReservoir:
         # slice instead of a search.
         total = self.n * self.fan_out
         self.post = rng.integers(0, self.n, total, dtype=np.int32)
+
+        # --- in-degree regularity ---------------------------------------
+        # The default draw is an Erdos-Renyi graph, so in-degree is Poisson:
+        # mean `fan_out`, but individual cells receive anywhere from 30 to 100+
+        # synapses. The cells at the top of that tail fire first and drive
+        # their own neighbours hard, which is a local instability that a
+        # *global* statistic cannot see. Measured: the pool holds a healthy
+        # 10-20 Hz mean rate while the largest Lyapunov exponent is +0.05,
+        # and every inhibitory gain from 5 to 160 leaves the exponent positive.
+        #
+        # `regular=True` builds a directed random-regular graph instead: each
+        # cell sends exactly `fan_out` synapses and receives exactly
+        # `fan_out`, by summing `fan_out` random permutations. Each
+        # permutation is a bijection, so every target is hit exactly once per
+        # block and the in-degree has zero variance. Same memory, same
+        # synapse count, same mean strength — only the tail is gone.
+        self.regular = bool(regular)
+        if self.regular:
+            perms = np.empty((self.fan_out, self.n), dtype=np.int32)
+            for j in range(self.fan_out):
+                perms[j] = rng.permutation(self.n)
+            # Cell i owns slice [i*fan_out, (i+1)*fan_out), so the flat layout
+            # has to be (cell, slot), not (slot, cell).
+            self.post = np.ascontiguousarray(perms.T).reshape(-1)
+            del perms
         self.w = rng.normal(0.0, w_scale, total).astype(np.float32)
+
+        # --- Dale's law -------------------------------------------------
+        # The shipped pool draws every synapse's sign independently, so one
+        # cell emits both excitation and inhibition. Cortex does not do this:
+        # a neuron is excitatory or inhibitory for its whole life, and about
+        # one in five is inhibitory. The distinction is not cosmetic here.
+        # Feedback inhibition is what stops a local cluster of strongly
+        # coupled excitatory cells from running away, and with mixed signs a
+        # cell cannot be suppressed by its own neighbours — only nudged. That
+        # is a candidate explanation for why the measured Lyapunov exponent
+        # stays positive while the mean firing rate looks healthy: the mean is
+        # fine, the variance around it is not.
+        self.dale = bool(dale)
+        self.inh_mask = None
+        if self.dale:
+            n_inh = max(1, int(round(self.n * float(inh_frac))))
+            inh_cells = rng.choice(self.n, n_inh, replace=False)
+            mask = np.zeros(self.n, dtype=bool)
+            mask[inh_cells] = True
+            cell_sign = np.where(mask, np.float32(-1.0),
+                                 np.float32(1.0)).astype(np.float32)
+            self.w = (np.abs(self.w)
+                      * np.repeat(cell_sign, self.fan_out)).astype(np.float32)
+            self.inh_mask = mask
+
+        # --- synaptic scaling -------------------------------------------
+        # Hold each cell's total outgoing strength fixed instead of letting a
+        # normal draw decide it. A Gaussian with sd = w_scale gives cell-to-
+        # cell output norms a spread of roughly 1/sqrt(2*fan_out), so at
+        # fan_out 32 the strongest cells carry about 12% more drive than the
+        # mean cell. If the chaos threshold sits inside that spread, the
+        # population reports a healthy mean rate while its top decile is
+        # already diverging — which is exactly the pattern measured. Scaling
+        # removes the spread and leaves only the mean to tune.
+        self.normalize_out = bool(normalize_out)
+        if self.normalize_out:
+            wm = self.w.reshape(self.n, self.fan_out)
+            nrm = np.linalg.norm(wm, axis=1, keepdims=True)
+            nrm[nrm < 1e-9] = 1e-9
+            wm *= (np.float32(w_scale * np.sqrt(self.fan_out)) / nrm)
         self._offsets = (np.arange(self.fan_out, dtype=np.int64)
                          * np.float32(1.0))
         self._arange = np.arange(self.fan_out, dtype=np.int64)

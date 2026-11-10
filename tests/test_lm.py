@@ -218,3 +218,43 @@ def test_heterogeneous_adaptation_is_wired_up():
     for _ in range(30):
         pool.step(np.arange(500), 0.9)
     assert not np.isnan(pool.v).any()
+
+
+def test_inhibition_moves_the_exponent_through_zero():
+    """A stable pool exists, and it is the one with less memory.
+
+    Earlier claims that no inhibitory gain reaches a negative exponent were
+    measured only to ginh=160 (+0.05). At ginh=800 the exponent is negative,
+    which makes the trade-off explicit rather than hypothetical.
+    """
+    from cerebrum.lm.capacity import lyapunov
+
+    def probe(ginh):
+        pool = SparseReservoir(20_000, 64, w_scale=3.0, ginh=ginh,
+                               target_frac=0.0, seed=0)
+        pool.g_adapt = 0.0
+        pool._k_adapt = np.float32(0.0)
+        return lyapunov(pool)
+
+    chaotic = probe(20.0)
+    stable = probe(800.0)
+    assert chaotic > 0.03, "expected chaos at ginh=20: %.4f" % chaotic
+    assert stable < 0.0, "expected stability at ginh=800: %.4f" % stable
+
+
+def test_input_gain_is_per_cell_when_requested():
+    """The gain has to be per neuron; a scalar would leave every driven cell
+    charging at the same rate, which is the bug the capacity measurement had
+    to fix in its own input coding."""
+    from cerebrum.lm.model import ReservoirLM
+
+    lm = ReservoirLM(n_neurons=2000, n_chars=20, k_context=3, k_in=40,
+                     n_bins=32, steps_per_token=1, input_gain_spread=0.5,
+                     seed=0)
+    assert lm.input_gain is not None
+    assert lm.input_gain.shape == (2000,)
+    assert float(lm.input_gain.std()) > 0.1
+
+    plain = ReservoirLM(n_neurons=2000, n_chars=20, k_context=3, k_in=40,
+                        n_bins=32, steps_per_token=1, seed=0)
+    assert plain.input_gain is None

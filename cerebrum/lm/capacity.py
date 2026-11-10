@@ -75,13 +75,17 @@ survives is the current input, which is re-injected every millisecond and
 therefore dominates the chaotic background. Capacity one is the direct
 consequence.
 
-Nothing that was tried moves the exponent below zero: fan-out 32 -> 256,
-adaptation off, membrane time constant 20 -> 80 ms, inhibitory gain 2 -> 600,
-and removing the inhibitory dead zone entirely (``target_frac = 0``, so the
-pool is under proportional feedback at all activity levels instead of only
-above 3%). A *global* inhibitory pool cannot fix this, because chaos is a
-property of how microscopic differences diverge, and one scalar applied to
-every cell only sets the mean rate.
+Nothing moves the exponent below zero within a sane operating range:
+fan-out 32 -> 256, adaptation off, membrane time constant 20 -> 80 ms,
+inhibitory gain 2 -> 320, and removing the inhibitory dead zone entirely
+(``target_frac = 0``). A *global* inhibitory pool barely touches it, because
+chaos is a property of how microscopic differences diverge and one scalar
+applied to every cell only sets the mean rate.
+
+It does cross zero eventually — at ``ginh`` 800 — but capacity falls from
+0.80 to 0.28 on the way, so the stable pool is not a better pool. See
+:func:`rate_sweep` for the measured trade-off, and note that strong weights
+do not buy the memory back at lambda = 0.
 
 The best operating point found is ``w = 6, ginh = 2, target_frac = 0``, which
 scores MC 0.92 at depth 3 — still chaotic, but with a longer decorrelation
@@ -315,6 +319,67 @@ def report(results: list[dict], widths: int = 8) -> None:
                  r["memory_mb"], r["rate_hz"], r["mc"], r["depth"], head))
     print()
     print("深度 = MC_k > 0.1 的最远 k；k 以「保持住的输入」为单位（每个保持 %d ms）" % HOLD)
+
+
+def rate_sweep(n: int = 20_000, w: float = 3.0, fan_out: int = 64,
+               ginhs=(20.0, 40.0, 80.0, 160.0, 320.0, 500.0, 800.0,
+                      1200.0, 2000.0),
+               T: int = 300, max_delay: int = 8, n_bins: int = 64) -> None:
+    """Capacity and chaos as inhibition sets the firing rate.
+
+    This is the missing control variable in every earlier sweep. Firing rate
+    is what the pool actually lives at, and inhibition is the only clean way
+    to move it. Measured at n=20k, fan-out 64, w=3:
+
+        ginh    Hz     lambda    MC    depth
+          20   21.3    +0.083    0.80    2
+         320    8.5    +0.013    0.36    1
+         800    7.3    -0.012    0.28    1
+        3200    3.7    -0.010    0.13    0
+
+    (Rates are for a drive of 1.5% of the pool. A wider drive raises the
+    rate roughly in proportion and leaves the exponent and capacity put.)
+
+    The Lyapunov exponent does cross zero — at ginh ~ 800, which is far past
+    the range examined earlier (the claim "no inhibitory gain moves it below
+    zero" was measured only up to ginh=160, where the exponent is still
+    +0.05). But capacity falls monotonically from the chaotic side to the
+    stable side, so there is no window that is both stable and informative.
+
+    Strong weights do not buy the capacity back at lambda = 0: w=6 reaches
+    MC 0.68 while chaotic (+0.065) and 0.24 once inhibited to -0.006; w=10
+    gives 0.34 at +0.035 and 0.28 at -0.006. The capacity peak always sits
+    slightly on the chaotic side, which is the edge-of-chaos result measured
+    directly in this pool rather than assumed.
+    """
+    u = np.random.default_rng(7).uniform(-1, 1, T).astype(np.float32)
+    print("%7s | %7s %8s | %5s %5s" % ("ginh", "Hz", "lambda", "MC", "dep"))
+    for ginh in ginhs:
+        pool = SparseReservoir(n, fan_out, w_scale=w, ginh=ginh,
+                               target_frac=0.0, seed=0)
+        pool.g_adapt = 0.0
+        pool._k_adapt = np.float32(0.0)
+        # Driven with 1.5% of the pool, the same drive the table below was
+        # measured with; a larger driven population raises the rate without
+        # changing the exponent or the capacity.
+        for _ in range(800):
+            pool.step(np.arange(max(1, int(n * 0.015))), 0.9)
+        hz = pool.rate_hz()
+
+        probe = SparseReservoir(n, fan_out, w_scale=w, ginh=ginh,
+                                target_frac=0.0, seed=0)
+        probe.g_adapt = 0.0
+        probe._k_adapt = np.float32(0.0)
+        lam = lyapunov(probe)
+
+        q = SparseReservoir(n, fan_out, w_scale=w, ginh=ginh,
+                            target_frac=0.0, seed=0)
+        q.g_adapt = 0.0
+        q._k_adapt = np.float32(0.0)
+        X = collect_states(q, u, n_bins=n_bins, seed=0)
+        c = capacity_curve(X, u, max_delay=max_delay)
+        print("%7.0f | %7.1f %+8.3f | %5.2f %5d"
+              % (ginh, hz, lam, c.sum(), int((c > 0.1).sum())))
 
 
 FRONTIER = (

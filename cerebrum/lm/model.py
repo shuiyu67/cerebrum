@@ -57,6 +57,7 @@ class ReservoirLM:
         whiten: bool = False,
         steps_per_token: int = 4,
         drive: float = 0.5,
+        input_gain_spread: float = 0.0,
         seed: int = 0,
         **reservoir_kwargs,
     ) -> None:
@@ -94,6 +95,28 @@ class ReservoirLM:
         self.loss_ema = float(np.log(n_chars))
         self.updates = 0
 
+        # --- heterogeneous input drive ----------------------------------
+        # Every driven cell currently receives the *same* current, so the
+        # cells of one input group charge together, cross threshold together
+        # and go refractory together. The pool state then reports the
+        # refractory phase of the group rather than the pattern that drove it,
+        # and the readout is left with "which neurons were selected" — which
+        # is a lookup table, not a dynamics.
+        #
+        # The capacity measurement hit exactly this wall and fixed it by
+        # giving every input cell its own threshold; k=0 reconstruction went
+        # from 0.03 to 0.85. The language model never received that fix.
+        # Cortical synaptic strengths are lognormal, so the same heterogeneity
+        # is applied here as a fixed per-cell gain — one float per neuron,
+        # no extra memory at the synapse level, and no gradient.
+        self.input_gain_spread = float(input_gain_spread)
+        if self.input_gain_spread > 0.0:
+            self.input_gain = np.exp(
+                rng.normal(0.0, self.input_gain_spread,
+                           n_neurons)).astype(np.float32)
+        else:
+            self.input_gain = None
+
     # -- features --------------------------------------------------------
 
     def encode(self, context: np.ndarray) -> np.ndarray:
@@ -105,6 +128,13 @@ class ReservoirLM:
     def run_pool(self, context: np.ndarray, current: int) -> np.ndarray:
         """Drive the pool for ``steps_per_token`` and return its state."""
         ext = self.encode(context)
+        # Per-cell drive when the gain is heterogeneous, one scalar otherwise.
+        # `step` accepts either, and the vector form is what stops a whole
+        # input group from firing in lockstep.
+        if self.input_gain is not None:
+            ext_val = (self.drive * self.input_gain[ext]).astype(np.float32)
+        else:
+            ext_val = self.drive
         # The pool is not reset between characters. Its state *is* the
         # memory of the preceding context; clearing it every token would
         # leave each prediction depending on the current character alone,
@@ -112,7 +142,7 @@ class ReservoirLM:
         # beat.
         acc = np.zeros(self.n_bins, np.float32)
         for _ in range(self.steps_per_token):
-            idx = self.pool.step(ext, ext_val=self.drive)
+            idx = self.pool.step(ext, ext_val=ext_val)
             if idx.size:
                 acc += self.pool.binned_state(idx, self.n_bins)
         acc /= float(self.steps_per_token)

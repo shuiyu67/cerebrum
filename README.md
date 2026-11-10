@@ -287,13 +287,13 @@ millisecond (cosine 0.46 after 1 ms, 0.13 after 6 ms). A chaotic network does
 not hold a state and release it later; it amplifies any difference until it
 saturates and replaces it with an unrelated one.
 
-**A global inhibitory pool cannot fix this.** The exponent stays positive when
-the inhibitory gain is swept from 2 to 600, when adaptation is removed, when
-the membrane time constant goes from 20 to 80 ms, when fan-out goes from 32 to
-256, and when the inhibitory dead zone is removed entirely (`target_frac = 0`,
-so the pool is under proportional feedback at every activity level instead of
-only above 3%). Chaos is a property of how *microscopic* differences diverge;
-one scalar applied to every cell only sets the mean rate.
+**A global inhibitory pool barely touches it — until it overshoots.** The
+exponent stays positive as the inhibitory gain goes from 2 to 320 (at 160 it is
+still +0.05), and it is unmoved by removing adaptation, by the membrane time
+constant going 20 -> 80 ms, by fan-out going 32 -> 256, and by removing the
+inhibitory dead zone (`target_frac = 0`). Push the gain to 800 and it does
+cross zero — and capacity falls from 0.80 to 0.28 at the same time. The next
+section measures that trade-off directly.
 
 Two consequences worth stating plainly:
 
@@ -328,6 +328,74 @@ and each one had produced a plausible-looking zero:
 3. **Hold time.** One input per millisecond against a 20 ms membrane is an
    aliased signal. Holding each input for 6 ms is what makes the control arm
    score 0.85 instead of 0.04.
+
+### The exponent does cross zero, and that is the bad news
+
+Pushing inhibition far past the range examined earlier takes the pool across
+the chaos boundary. It just does not take capacity with it:
+
+| ginh | rate | λ | capacity | depth |
+|---|---|---|---|---|
+| 20 | 21.4 Hz | **+0.083** | **0.80** | 2 |
+| 320 | 8.5 Hz | +0.013 | 0.36 | 1 |
+| 800 | 7.3 Hz | **−0.012** | 0.28 | 1 |
+| 3200 | 3.7 Hz | −0.010 | 0.13 | 0 |
+
+A stable pool exists. It holds a third as much. Capacity falls monotonically
+from the chaotic side to the stable side, so there is no window that is both
+stable and informative, and the peak sits *slightly on the chaotic side*
+(+0.07 to +0.08). That is the edge-of-chaos result measured in this pool
+rather than imported from the literature.
+
+Strong weights do not buy the memory back at λ = 0: `w = 6` scores 0.68 while
+chaotic (+0.065) and 0.24 once inhibited to −0.006; `w = 10` gives 0.34 at
++0.035 and 0.28 at −0.006. Standing on the λ = 0 line costs two thirds of the
+capacity every time.
+
+Two structural candidates were tried, and both failed:
+
+- **In-degree regularity.** The default Erdos-Renyi graph has Poisson
+  in-degree (mean 64, sd 8.0, range 36-98), so the top of the tail is driven
+  much harder than the mean cell and diverges first. Replacing it with a
+  directed random-regular graph (sd 0.00 — every cell exactly 64 in and 64
+  out) moved λ from +0.083 only to +0.077 and *cut* capacity from 0.80 to
+  0.48. The tail is not the cause.
+- **Dale's law.** Giving every cell one sign (80% excitatory, 20% inhibitory)
+  instead of drawing each synapse independently drove the pool to 494 Hz:
+  80/20 leaves net excitation at 0.6 of total drive. Correct biology, wrong
+  budget — it needs inhibition the global pool does not supply.
+
+### The pool contributes almost nothing to the language model
+
+Measured by removing the recurrence entirely:
+
+| w_scale | recurrence | bits/char |
+|---|---|---|
+| 0.0 | none | 5.363 |
+| 2.0 | weak | 5.355 |
+| 5.66 | the operating point | 5.311 |
+
+The whole contribution of the recurrent pool is **0.05 bits**. With the
+recurrence off the model is still 0.71 bits worse than a bigram table, which
+puts the bottleneck outside the pool: one online pass of SGD over a
+96 x 736 readout cannot match exact counting. Integrating the input longer
+does not fix it — 4.864 (2 ms), 4.778 (6 ms), 4.720 (12 ms), 4.701 (16 ms),
+saturating near 4.70 against the bigram's 4.431.
+
+Heterogeneous input drive was the last candidate and it failed as well. Every
+driven cell gets the *same* current, so an input group fires in lockstep; the
+capacity measurement hit this and fixed it with per-cell thresholds.
+Applying that fix here — a fixed lognormal per-cell gain, one float per
+neuron — moved bits from 5.311 to 5.251 at gain spread 0.8. Nearly nothing,
+because each (position, character) already drives its own disjoint cell set:
+the pattern is carried by *which* cells fire and the phase adds no
+information.
+
+Read together: capacity one to two, a pool worth 0.05 bits, and a stable
+region that remembers less than the chaotic one. The random reservoir is not
+under-tuned, it is at its structural limit, and the limit is the single-spike
+trigger — a cell needs two or three coincident inputs to fire, so it never
+integrates and anything older than a few milliseconds has been overwritten.
 
 ### What this means
 
