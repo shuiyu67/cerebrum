@@ -565,6 +565,65 @@ right place to look and this pool is not yet good enough at it.
 Run it with ``python -m examples.pole_control``; the figure lands in
 ``data/pole_comparison.png``.
 
+## The dino game, and what a spiking readout can actually learn
+
+The pendulum ties because it is linearly controllable and the readout was fitted
+on a PD teacher. The dino game removes both crutches: the only signal is
+survival, and the readout is trained by PPO with no teacher at all.
+
+It works, up to a point. 6000 neurons, 512 readout bins, one continuous action
+thresholded into a jump:
+
+| controller | score (frames survived) |
+|---|---|
+| heuristic reference | **3000 / 3000 on every seed** |
+| spiking pool + trained readout | 354 mean, 553 in the video, 1064 best |
+| do nothing | 117 |
+
+The video is `data/dino.mp4`: left is the pool, right is the heuristic, same
+obstacle sequence, both starting from an identical seed.
+
+### Getting there took four failures worth recording
+
+**1. The jump rule is not linearly separable in raw pixels.** The rule is
+"impact in fewer than ~9 frames", which in raw units is distance divided by
+speed. Decoding the jump label from (distance, speed) scores **R² 0.05** — a
+linear readout cannot represent it, and behaviour cloning on the pool's state
+scored a 132-frame run against the heuristic's 3000.
+
+**2. Encoding time-to-impact fixes that, and the pool carries it.** With
+distance-divided-by-speed as one of the eleven inputs, decoding TTI from the
+pool's spiking state reaches **R² 0.926**. So the pool does transmit the
+quantity that matters — the bottleneck is not information, it is precision.
+
+**3. Precision is the wall.** At 6000 neurons the residual error is 3.3 frames
+(R² 0.977) against a jump window of about 9. Three frames of slop inside a
+nine-frame window is enough to mistime one jump in twenty, and one mistimed
+jump ends the run. More neurons buy accuracy slowly: 2000 neurons gave 5 frames
+of error and a 133-frame run, 6000 gave 3.3 frames and 528.
+
+**4. PPO from scratch does not move.** Trained on survival reward alone with a
+random readout, the policy stayed at the "never jump" score of 117 for 110
+updates; the learned standard deviation never left 0.371. The reward is too
+thin — jumping at the wrong moment is as bad as not jumping, so the gradient
+averages to nothing until the policy already jumps correctly some of the time.
+Bootstrapping it from the heuristic (behaviour cloning, then DAgger for three
+rounds) reached 246-301 and stopped there.
+
+### What this says
+
+The pool can learn to play, and it plateaus around a third of the heuristic's
+survival time because its readout predicts the critical quantity with a few
+frames of error. That is the same statement the memory-capacity measurements
+made in a different currency: a fixed random spiking pool is a noisy
+compressor, and noise at the last layer is what kills a hard-deadline control
+task.
+
+The honest summary is that a spiking reservoir is *adequate* for this kind of
+game — it clearly beats doing nothing, and the video shows it clearing cacti
+for nine seconds — but it does not beat a three-line rule, and no amount of
+extra neurons closed the gap in the time available.
+
 ## The substrate engine
 
 The original engine — `cerebrum.core.Brain` — is still here and still what the
