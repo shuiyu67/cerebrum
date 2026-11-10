@@ -56,6 +56,12 @@ def main(argv=None) -> int:
     # lockstep); anything above 0 spreads the drive so the state reports the
     # input pattern instead of the refractory phase.
     ap.add_argument("--gain-spread", type=float, default=0.0)
+    # Plasticity. `--stdp` builds the per-synapse eligibility trace;
+    # `--three-factor` gates that trace with the readout error. Either alone
+    # is meaningless: without the trace there is nothing to gate, and without
+    # the error the rule is unsupervised and measured worse than freezing.
+    ap.add_argument("--stdp", type=float, default=0.0)
+    ap.add_argument("--three-factor", type=float, default=0.0)
     args = ap.parse_args(argv)
 
     corpus = Corpus(args.corpus)
@@ -66,6 +72,7 @@ def main(argv=None) -> int:
         k_context=args.context, k_in=args.k_in, n_bins=args.bins,
         steps_per_token=args.steps, seed=args.seed,
         input_gain_spread=args.gain_spread,
+        stdp=args.stdp, three_factor=args.three_factor,
         fan_out=args.fan_out,
         w_scale=(args.w_scale if args.w_scale is not None
                  else 8.0 * (32.0 / args.fan_out) ** 0.5),

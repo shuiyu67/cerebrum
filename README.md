@@ -443,6 +443,55 @@ trace stays local; the scalar is a single number for the whole pool. That is
 the only variant here that could carry task information into the synapses
 without a backward pass.
 
+### The third factor is not enough either
+
+The rule above has no idea what the pool is for, so the obvious next step is
+to give it one: accumulate a per-synapse eligibility trace from STDP, then
+commit that trace gated by a single scalar — how much better or worse the
+prediction was than a running baseline. Local mechanism, global objective,
+no gradient through the recurrence.
+
+It does not work. Same pool, same corpus, same seed, only the scalar gain
+changes:
+
+| three_factor | bits/char |
+|---|---|
+| 0 (frozen pool) | **5.311** |
+| 1 | 5.294 |
+| 5 | 5.306 |
+| 20 | 5.330 |
+| 200 | 5.369 |
+
+The best result is the frozen pool, and everything above the smallest gain is
+worse than doing nothing. The improvement at gain 1 is 0.017 bits, which is
+inside the seed-to-seed scatter of this measurement.
+
+Why one scalar cannot do it, stated as simply as possible: the eligibility
+trace answers *who was involved*, and the error answers *whether the outcome
+was good*. It never answers *which of the synapses that were involved is to
+blame*. Multiply a recency record by a single number and every synapse that
+happened to fire recently gets pushed in the same direction — including the
+ones that were irrelevant. At small gain nothing moves; at large gain the
+random push destroys the heterogeneity the capacity was coming from, which is
+why the curve is monotone in the wrong direction.
+
+This is the classic credit-assignment problem, and it is the reason
+three-factor rules in the literature are demonstrated on tasks with a handful
+of synapses or a handful of choices, not on sequence models.
+
+**What the brain does differently is not a bigger scalar.** Cortex carries
+prediction error between layers — a signal with structure, not one number for
+the whole population. A single random pool with one global modulator is a
+degenerate case that has the shape of learning without its content.
+
+So the honest position after four experiments: within this architecture,
+nothing local beats freezing the pool, and every candidate that looked like it
+should help either was directionally wrong (outgoing scaling), destroyed the
+heterogeneity it was reading out (normalisation), or lacked the information to
+assign credit (one scalar). The pool is a fixed random projection, and the
+0.05 bits it contributes is what a fixed random projection is worth on this
+task.
+
 ### What this means
 
 The engine runs a million neurons and learns online, in one pass, with no

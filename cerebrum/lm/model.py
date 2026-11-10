@@ -95,6 +95,14 @@ class ReservoirLM:
         self.loss_ema = float(np.log(n_chars))
         self.updates = 0
 
+        # Running baseline for the third factor. The error handed to the pool
+        # is how much better or worse the prediction was than this baseline,
+        # not the raw probability: on a text where the right answer is almost
+        # always around 0.3, a raw p would be positive nearly always and the
+        # rule would only ever potentiate. The baseline tracks what "normal"
+        # looks like, so the sign of the error means something.
+        self.reward_baseline = 1.0 / float(n_chars)
+
         # --- heterogeneous input drive ----------------------------------
         # Every driven cell currently receives the *same* current, so the
         # cells of one input group charge together, cross threshold together
@@ -211,6 +219,15 @@ class ReservoirLM:
             self.W *= np.float32(1.0 - lr * weight_decay)
         self.updates += 1
         self.loss_ema = 0.99 * self.loss_ema + 0.01 * loss
+
+        # Third factor: tell the pool whether that prediction was better or
+        # worse than usual. One scalar, no gradient into the recurrence.
+        if getattr(self.pool, "elig", None) is not None:
+            p_t = float(p[int(target)])
+            delta = p_t - self.reward_baseline
+            self.reward_baseline = 0.99 * self.reward_baseline + 0.01 * p_t
+            self.pool.apply_reward(delta)
+
         return loss
 
     # -- evaluation ------------------------------------------------------

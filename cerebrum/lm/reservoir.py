@@ -97,6 +97,8 @@ class SparseReservoir:
         tau_trace: float = 20.0,
         a_plus: float = 1.0,
         a_minus: float = 1.05,
+        three_factor: float = 0.0,
+        tau_elig: float = 100.0,
         seed: int = 0,
     ) -> None:
         self.n = int(n)
@@ -299,6 +301,43 @@ class SparseReservoir:
             pre_index = np.repeat(np.arange(self.n, dtype=np.int32), self.fan_out)
             self._pre_sorted = pre_index[self._order]
 
+        # --- three-factor rule ------------------------------------------
+        # STDP alone writes straight into the weights, and the last three
+        # experiments show why that cannot work: the rule has no idea what the
+        # pool is *for*, so it can only enforce a statistic (a rate, a norm),
+        # and every statistic available is orthogonal to the one that matters.
+        # Measured: freezing the pool beats every unsupervised rule tried.
+        #
+        # The third factor is the missing piece, and it is one number: how
+        # wrong the prediction was. STDP no longer touches the weights — it
+        # accumulates a per-synapse eligibility trace saying "this synapse was
+        # recently involved in something". When a prediction lands, the trace
+        # is multiplied by the scalar error and added to the weights:
+        #
+        #     dw_ij = eta * e_ij * delta
+        #
+        # The trace is local (each synapse only needs its own two cells); the
+        # error is global (one number for the whole pool). Nothing is
+        # backpropagated through time, and no gradient touches the recurrence.
+        # What travels backwards is a scalar, which is the cheapest thing that
+        # can carry "that was wrong" into a synapse.
+        self.three_factor = float(three_factor)
+        self.tau_elig = float(tau_elig)
+        self._elig_decay = np.float32(np.exp(-1.0 / max(1e-6, self.tau_elig)))
+        self.elig = (np.zeros(self.n * self.fan_out, np.float32)
+                     if self.three_factor > 0.0 else None)
+        self.reward_updates = 0
+        if self.three_factor > 0.0:
+            # The trace needs the same in-degree indexing the STDP rule uses,
+            # even when the direct STDP write-back is switched off.
+            if self._order is None:
+                self._order = np.argsort(self.post, kind="stable")
+                self._post_sorted = self.post[self._order].astype(np.int64)
+            if self._pre_sorted is None:
+                pre_index = np.repeat(np.arange(self.n, dtype=np.int32),
+                                      self.fan_out)
+                self._pre_sorted = pre_index[self._order]
+
         # Preallocated temporaries and folded constants for the in-place
         # update. Allocating these per step was most of the runtime.
         self._inbuf = np.zeros(self.n, np.float32)
@@ -443,26 +482,59 @@ class SparseReservoir:
         """
         lr = self.stdp
 
+        # When a third factor is present the rule writes into the eligibility
+        # trace instead of the weights. The trace says "this synapse was
+        # involved"; only a later error decides whether that counts as good or
+        # bad. Without the third factor it writes straight through, which is
+        # the unsupervised rule that measured worse than freezing the pool.
+        out = self.elig if self.elig is not None else self.w
+        bound = self.elig is None
+
         # --- depression (original layout, contiguous per presynaptic cell) --
         sel = (idx[:, None] * self.fan_out + self._arange[None, :]).ravel()
         if sel.size:
-            ws = self.w[sel]
+            ws = out[sel]
             ws -= lr * self._a_minus * self.post_trace[self.post[sel]]
-            np.clip(ws, -self.w_max, self.w_max, out=ws)
-            self.w[sel] = ws
+            if bound:
+                np.clip(ws, -self.w_max, self.w_max, out=ws)
+            out[sel] = ws
 
         # --- potentiation (in-degree order, gathered after depression) ------
         order = self._order
-        wt = self.w[order]
+        wt = out[order]
         starts = np.searchsorted(self._post_sorted, idx, side="left")
         ends = np.searchsorted(self._post_sorted, idx, side="right")
         for s, e in zip(starts, ends):
             if e > s:
                 sl = slice(int(s), int(e))
                 wt[sl] += lr * self._a_plus * self.pre_trace[self._pre_sorted[sl]]
-        np.clip(wt, -self.w_max, self.w_max, out=wt)
-        self.w[order] = wt
+        if bound:
+            np.clip(wt, -self.w_max, self.w_max, out=wt)
+        out[order] = wt
         self.stdp_updates += 1
+
+    def apply_reward(self, delta: float) -> None:
+        """Commit the eligibility trace, gated by one scalar error.
+
+        ``delta`` is positive when the prediction was better than expected and
+        negative when it was worse. Every synapse that was recently involved
+        moves by ``eta * eligibility * delta``: the trace decides *which*
+        synapses are candidates, the scalar decides *whether* the last thing
+        they did was worth keeping.
+
+        The trace then decays, so an involvement that is never followed by a
+        verdict fades instead of being credited to an unrelated later event.
+
+        This is the whole of the credit assignment: one number, applied to a
+        per-synapse record of recency. No backpropagation through time, no
+        gradient of the recurrence, nothing stored per timestep.
+        """
+        if self.elig is None:
+            return
+        self.w += np.float32(self.three_factor * float(delta)) * self.elig
+        np.clip(self.w, -self.w_max, self.w_max, out=self.w)
+        self.elig *= self._elig_decay
+        self.reward_updates += 1
 
     def _normalize_incoming(self) -> None:
         """Hold every cell's incoming weight norm fixed.
